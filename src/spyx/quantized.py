@@ -95,6 +95,13 @@ def ternarize_weights(
     return _ste(ternary, w)
 
 
+def binarize_weights(w: jnp.ndarray, ste: bool = True) -> jnp.ndarray:
+    binary = jnp.where(w >= 0, 1.0, -1.0).astype(w.dtype)
+    if not ste:
+        return binary
+    return _ste(binary, w)
+
+
 class FixedPointLinear(hk.Module):
     """Linear layer with fixed-point fake-quantized arithmetic."""
 
@@ -175,6 +182,90 @@ class TernaryFixedPointLinear(TernaryLinear):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, name="TernaryFixedPointLinear", **kwargs)
+
+
+class BinaryLinear(hk.Module):
+    """Linear layer with binary weights in {-1, +1}."""
+
+    def __init__(
+        self,
+        output_size: int,
+        cfg: FixedPointConfig | None = None,
+        with_bias: bool = False,
+        name: str = "BinaryLinear",
+    ):
+        super().__init__(name=name)
+        self.output_size = output_size
+        self.cfg = cfg or FixedPointConfig()
+        self.with_bias = with_bias
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        in_features = x.shape[-1]
+        w = hk.get_parameter(
+            "w",
+            shape=(in_features, self.output_size),
+            init=hk.initializers.TruncatedNormal(),
+        )
+        x_q = quantize_fixed(x, self.cfg)
+        w_b = binarize_weights(w)
+        y = jnp.matmul(x_q, w_b)
+        y = quantize_fixed(y, self.cfg)
+        if self.with_bias:
+            b = hk.get_parameter("b", shape=(self.output_size,), init=jnp.zeros)
+            y = quantize_fixed(y + quantize_fixed(b, self.cfg), self.cfg)
+        return y
+
+
+class FixedPointConv2D(hk.Module):
+    """2D convolution with fixed-point fake quantization."""
+
+    def __init__(
+        self,
+        output_channels: int,
+        kernel_shape: tuple[int, int],
+        stride: int | tuple[int, int] = 1,
+        padding: str = "SAME",
+        cfg: FixedPointConfig | None = None,
+        with_bias: bool = False,
+        name: str = "FixedPointConv2D",
+    ):
+        super().__init__(name=name)
+        self.output_channels = output_channels
+        self.kernel_shape = kernel_shape
+        self.stride = stride
+        self.padding = padding
+        self.cfg = cfg or FixedPointConfig()
+        self.with_bias = with_bias
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        in_channels = x.shape[-1]
+        kh, kw = self.kernel_shape
+        w = hk.get_parameter(
+            "w",
+            shape=(kh, kw, in_channels, self.output_channels),
+            init=hk.initializers.TruncatedNormal(),
+        )
+        x_q = quantize_fixed(x, self.cfg)
+        w_q = quantize_fixed(w, self.cfg)
+
+        if isinstance(self.stride, int):
+            stride = (self.stride, self.stride)
+        else:
+            stride = self.stride
+
+        y = jax.lax.conv_general_dilated(
+            lhs=x_q,
+            rhs=w_q,
+            window_strides=stride,
+            padding=self.padding,
+            dimension_numbers=("NHWC", "HWIO", "NHWC"),
+        )
+        y = quantize_fixed(y, self.cfg)
+
+        if self.with_bias:
+            b = hk.get_parameter("b", shape=(self.output_channels,), init=jnp.zeros)
+            y = quantize_fixed(y + quantize_fixed(b, self.cfg), self.cfg)
+        return y
 
 
 class FixedPointLIF(hk.RNNCore):

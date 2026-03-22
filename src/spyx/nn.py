@@ -7,6 +7,18 @@ from collections.abc import Sequence
 from typing import Optional, Union
 import warnings
 
+
+def _validate_state_shape(name: str, state: jnp.ndarray, expected_tail: tuple[int, ...]) -> None:
+    if state.ndim < 2:
+        msg = f"{name} expected state with batch dimension, got shape {state.shape}"
+        raise ValueError(msg)
+    if tuple(state.shape[1:]) != expected_tail:
+        msg = (
+            f"{name} state shape mismatch: expected (batch, {expected_tail}), "
+            f"got {state.shape}"
+        )
+        raise ValueError(msg)
+
 #needs fixed.
 class ALIF(hk.RNNCore): 
     """
@@ -45,6 +57,7 @@ class ALIF(hk.RNNCore):
         :VT: Neuron state vector.
         """
 
+        _validate_state_shape("ALIF", VT, tuple(2 * s for s in self.hidden_shape))
         V, T = jnp.split(VT, 2, -1)
         
         gamma = self.gamma
@@ -103,6 +116,7 @@ class LI(hk.RNNCore):
         :x: Input tensor from previous layer.
         :Vin: Neuron state tensor. 
         """
+        _validate_state_shape("LI", Vin, self.layer_shape)
         beta = self.beta
         if not beta:
             beta = hk.get_parameter("beta", self.layer_shape,
@@ -145,6 +159,7 @@ class IF(hk.RNNCore):
         :x: Vector coming from previous layer.
         :V: Neuron state tensor.
         """
+        _validate_state_shape("IF", V, self.hidden_shape)
         # calculate whether spike is generated, and update membrane potential
         spikes = self.spike(V-self.threshold)
         V = V + x - spikes*self.threshold
@@ -191,7 +206,8 @@ class LIF(hk.RNNCore):
         :V: neuron state tensor.
 
         """
-        beta = self.beta # this line can probably be deleted, and the check changed to self.beta
+        _validate_state_shape("LIF", V, self.hidden_shape)
+        beta = self.beta
         if not beta:
             beta = hk.get_parameter("beta", self.hidden_shape,
                                 init=hk.initializers.TruncatedNormal(0.25, 0.5))
@@ -226,6 +242,7 @@ class CuBaLIF(hk.RNNCore):
         self.spike = activation
     
     def __call__(self, x, VI):
+        _validate_state_shape("CuBaLIF", VI, tuple(2 * v for v in self.hidden_shape))
         V, I = jnp.split(VI, 2, -1)
         
         alpha = self.alpha
@@ -286,6 +303,7 @@ class RIF(hk.RNNCore):
         :V: Neuron state tensor.
         """
 
+        _validate_state_shape("RIF", V, self.hidden_shape)
         recurrent = hk.get_parameter("w", self.hidden_shape*2, init=hk.initializers.TruncatedNormal())
 
         # calculate whether spike is generated, and update membrane potential
@@ -331,6 +349,7 @@ class RLIF(hk.RNNCore):
         :V: The state tensor.
         """
 
+        _validate_state_shape("RLIF", V, self.hidden_shape)
         recurrent = hk.get_parameter("w", self.hidden_shape*2, init=hk.initializers.TruncatedNormal())
 
         beta = self.beta
@@ -364,6 +383,7 @@ class RCuBaLIF(hk.RNNCore):
         self.spike = activation
     
     def __call__(self, x, VI):
+        _validate_state_shape("RCuBaLIF", VI, tuple(2 * v for v in self.hidden_shape))
         V, I = jnp.split(VI, 2, -1)
         
         alpha = self.alpha

@@ -113,3 +113,32 @@ def test_fixed_point_lif_state_shape():
     y, s = transformed.apply(params, xs, s0)
     assert y.shape == (5, 2, 4)
     assert s.shape == (2, 4)
+
+
+def test_binary_linear_forward_shape():
+    def model(x):
+        return qx.BinaryLinear(6, cfg=qx.FixedPointConfig(8, 3))(x)
+
+    x = jnp.ones((4, 5), dtype=jnp.float32)
+    transformed = hk.without_apply_rng(hk.transform(model))
+    params = transformed.init(jax.random.PRNGKey(4), x)
+    y = transformed.apply(params, x)
+    assert y.shape == (4, 6)
+
+
+def test_fixed_point_conv2d_forward_shape():
+    def model(x):
+        conv = qx.FixedPointConv2D(
+            output_channels=4,
+            kernel_shape=(3, 3),
+            stride=1,
+            padding="SAME",
+            cfg=qx.FixedPointConfig(8, 3),
+        )
+        return conv(x)
+
+    x = jnp.ones((2, 8, 8, 3), dtype=jnp.float32)
+    transformed = hk.without_apply_rng(hk.transform(model))
+    params = transformed.init(jax.random.PRNGKey(5), x)
+    y = transformed.apply(params, x)
+    assert y.shape == (2, 8, 8, 4)
