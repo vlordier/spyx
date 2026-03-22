@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from spyx_mlx.nn import ALIF, CuBaLIF, IF, LI, LIF
+from spyx_mlx.nn import ALIF, CuBaLIF, IF, LI, LIF, RLIF
 
 
 def _spyx_heaviside(x):
@@ -38,22 +38,22 @@ def _spyx_li_step(x, v, beta):
 
 
 def _spyx_alif_step(x, state, beta, gamma, threshold=1.0):
-    v, t = state[..., 0], state[..., 1]
+    v, t = np.split(state, 2, axis=-1)
     dyn_thresh = threshold + t
     spikes = _spyx_heaviside(v - dyn_thresh)
     v_next = beta * v + x - spikes * dyn_thresh
     t_next = gamma * t + (1.0 - gamma) * spikes
-    return spikes, np.stack([v_next, t_next], axis=-1)
+    return spikes, np.concatenate([v_next, t_next], axis=-1)
 
 
 def _spyx_cubalif_step(x, state, alpha, beta, threshold=1.0):
-    v, i = state[..., 0], state[..., 1]
+    v, i = np.split(state, 2, axis=-1)
     spikes = _spyx_heaviside(v - threshold)
     reset = spikes * threshold
     v = v - reset
     i_next = alpha * i + x
     v_next = beta * v + i_next - reset
-    return spikes, np.stack([v_next, i_next], axis=-1)
+    return spikes, np.concatenate([v_next, i_next], axis=-1)
 
 
 def test_li_matches_spyx_reference_one_step():
@@ -114,7 +114,7 @@ def test_alif_matches_spyx_reference():
     gamma = 0.9
     threshold = 1.0
     x_np = np.array([[0.3]], dtype=np.float32)
-    state_np = np.array([[[0.8, 0.0]]], dtype=np.float32)
+    state_np = np.array([[0.8, 0.0]], dtype=np.float32)
 
     neuron = ALIF(hidden_shape=(1,), beta_init=beta, gamma_init=gamma, threshold=threshold)
     spike_mlx, state_mlx = neuron(mx.array(x_np), mx.array(state_np))
@@ -129,11 +129,31 @@ def test_cubalif_matches_spyx_reference():
     beta = 0.9
     threshold = 1.0
     x_np = np.array([[0.2]], dtype=np.float32)
-    state_np = np.array([[[1.2, 0.1]]], dtype=np.float32)
+    state_np = np.array([[1.2, 0.1]], dtype=np.float32)
 
     neuron = CuBaLIF(hidden_shape=(1,), alpha_init=alpha, beta_init=beta, threshold=threshold)
     spike_mlx, state_mlx = neuron(mx.array(x_np), mx.array(state_np))
     spike_ref, state_ref = _spyx_cubalif_step(x_np, state_np, alpha=alpha, beta=beta, threshold=threshold)
+
+    np.testing.assert_allclose(_to_np(spike_mlx), spike_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(state_mlx), state_ref, atol=1e-6, rtol=0.0)
+
+
+def test_rlif_matches_spyx_reference_with_fixed_recurrent_matrix():
+    beta = 0.9
+    threshold = 1.0
+    x_np = np.array([[0.3]], dtype=np.float32)
+    v_np = np.array([[0.8]], dtype=np.float32)
+    w_np = np.array([[0.2]], dtype=np.float32)
+
+    neuron = RLIF(hidden_shape=(1,), beta_init=beta, threshold=threshold)
+    neuron.w_rec = mx.array(w_np)
+
+    spike_mlx, state_mlx = neuron(mx.array(x_np), mx.array(v_np))
+
+    spike_ref = _spyx_heaviside(v_np - threshold)
+    feedback_ref = spike_ref @ w_np
+    state_ref = beta * v_np + x_np + feedback_ref - spike_ref * threshold
 
     np.testing.assert_allclose(_to_np(spike_mlx), spike_ref, atol=1e-6, rtol=0.0)
     np.testing.assert_allclose(_to_np(state_mlx), state_ref, atol=1e-6, rtol=0.0)
