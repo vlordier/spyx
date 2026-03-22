@@ -450,5 +450,132 @@ class SHD_loader():
             return State(obs=obs, labels=labels)
         
         self.test_epoch = _test_epoch
+
+
+###########################################################
+
+class DVSGesture_loader():
+    """
+    Dataloading wrapper for the DVSGesture neuromorphic dataset.
+    Events are rastered into 2D frames with temporal axis packed for memory efficiency.
+    User must apply jnp.unpackbits(events, axis=<time axis>) before feeding to network.
+
+    https://research.ibm.com/articles/dvsgesture-dataset
+
+    :batch_size: Number of samples per batch.
+    :sample_T: Number of time bins per sample.
+    :val_size: Fraction of the training dataset to set aside for validation.
+    :data_subsample: Fraction of dataset to use (for reducing computational demand).
+    :key: Random seed for train/val split.
+    """
+
+    def __init__(self, batch_size=64, sample_T=128, val_size=0.2, data_subsample=1, key=0):
+        if not optional_dependencies_installed:
+            raise ImportError("Please install the optional dependencies by running 'pip install spyx[loaders]' to use this feature.")
+
+        self.batch_size = batch_size
+        self.val_size = val_size
+        self.obs_shape = (128, 128, 2)  # DVSGesture has 128x128 spatial resolution + 2 polarity
+        self.act_shape = tuple([11,])   # 11 gesture classes
+
+        # Transform: convert events to time-binned frames, rastered to 128x128 spatial grid, packed temporally
+        def _events_to_frame(events):
+            frame = np.zeros((sample_T, 128, 128, 2), dtype=np.uint8)
+            # Map event indices to frame: t_idx, x, y, polarity
+            if len(events["t"]) > 0:
+                t_max = events["t"].max()
+                if t_max > 0:
+                    t_indices = (events["t"] / t_max * (sample_T - 1)).astype(int)
+                    t_indices = np.minimum(t_indices, sample_T - 1)
+                else:
+                    t_indices = np.zeros(len(events["t"]), dtype=int)
+                np.add.at(frame, (t_indices, events["x"], events["y"], events["p"]), 1)
+                frame = np.minimum(frame, 1)  # Binarise
+            # Pack time axis
+            frame = np.packbits(frame, axis=0)
+            return frame
+
+        transform = transforms.Compose([
+            _events_to_frame,
+        ])
+
+        train_val_dataset = datasets.DVSGesture("./data", train=True, transform=transform)
+        test_dataset = datasets.DVSGesture("./data", train=False, transform=transform)
+
+        # Train/val split
+        train_indices, val_indices = train_test_split(
+            range(len(train_val_dataset)),
+            test_size=self.val_size,
+            random_state=key,
+            shuffle=True
+        )
+
+        train_indices = train_indices[:int(len(train_indices) * data_subsample)]
+        val_indices = val_indices[:int(len(val_indices) * data_subsample)]
+
+        # Train set
+        train_split = Subset(train_val_dataset, train_indices)
+        self.train_len = len(train_indices)
+
+        train_dl = iter(DataLoader(train_split, batch_size=self.train_len,
+                          collate_fn=tonic.collation.PadTensors(batch_first=True), drop_last=True, shuffle=False))
+
+        x_train, y_train = next(train_dl)
+        self.x_train = jnp.array(x_train, dtype=jnp.uint8)
+        self.y_train = jnp.array(y_train, dtype=jnp.uint8)
+
+        # Val set
+        val_split = Subset(train_val_dataset, val_indices)
+        self.val_len = len(val_indices)
+
+        val_dl = iter(DataLoader(val_split, batch_size=self.val_len,
+                          collate_fn=tonic.collation.PadTensors(batch_first=True), drop_last=True, shuffle=False))
+
+        x_val, y_val = next(val_dl)
+        self.x_val = jnp.array(x_val, dtype=jnp.uint8)
+        self.y_val = jnp.array(y_val, dtype=jnp.uint8)
+
+        # Test set
+        self.test_len = len(test_dataset)
+        test_dl = iter(DataLoader(test_dataset, batch_size=self.test_len,
+                          collate_fn=tonic.collation.PadTensors(batch_first=True), drop_last=True, shuffle=True))
+
+        x_test, y_test = next(test_dl)
+        self.x_test = jnp.array(x_test, dtype=jnp.uint8)
+        self.y_test = jnp.array(y_test, dtype=jnp.uint8)
+
+        @jax.jit
+        def _train_epoch(shuffle_key):
+            cutoff = self.train_len % self.batch_size
+            obs = _drop_remainder(jax.random.permutation(shuffle_key, self.x_train, axis=0), cutoff)
+            labels = _drop_remainder(jax.random.permutation(shuffle_key, self.y_train, axis=0), cutoff)
+            obs = jnp.reshape(obs, (-1, self.batch_size) + obs.shape[1:])
+            labels = jnp.reshape(labels, (-1, self.batch_size))
+            return State(obs=obs, labels=labels)
+
+        self.train_epoch = _train_epoch
+
+        @jax.jit
+        def _val_epoch():
+            cutoff = self.val_len % self.batch_size
+            x_val = _drop_remainder(self.x_val, cutoff)
+            y_val = _drop_remainder(self.y_val, cutoff)
+            obs = jnp.reshape(x_val, (-1, self.batch_size) + x_val.shape[1:])
+            labels = jnp.reshape(y_val, (-1, self.batch_size))
+            return State(obs=obs, labels=labels)
+
+        self.val_epoch = _val_epoch
+
+        @jax.jit
+        def _test_epoch():
+            cutoff = self.test_len % self.batch_size
+            x_test = _drop_remainder(self.x_test, cutoff)
+            y_test = _drop_remainder(self.y_test, cutoff)
+            obs = jnp.reshape(x_test, (-1, self.batch_size) + x_test.shape[1:])
+            labels = jnp.reshape(y_test, (-1, self.batch_size))
+            return State(obs=obs, labels=labels)
+
+        self.test_epoch = _test_epoch
+    
     
     

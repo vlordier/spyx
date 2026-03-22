@@ -89,3 +89,46 @@ def angle_code(neuron_count, min_val, max_val):
         return jax.nn.one_hot(digital, neuron_count)
 
     return jax.jit(_call)
+
+
+def event_emulator(threshold=0.5):
+    """
+    Generates an event emulator that converts frame sequences into spikes using delta-threshold filtering.
+    Useful for converting conventional video data into event-like spike representations.
+
+    Each pixel accumulates temporal differences; when the absolute difference exceeds the threshold,
+    a spike is emitted and the membrane is reset.
+
+    :threshold: Delta threshold for spike emission. Typically 0.5-1.0 for normalized inputs.
+    :return: Callable that takes frames (T, H, W, C) and returns spikes (T, H, W, C)
+    """
+
+    def _call(frames):
+        """
+        Convert frame sequence to spikes via delta-threshold.
+
+        :frames: jnp.array of shape (T, H, W, C) with values in [0, 1]
+        :return: jnp.array of shape (T, H, W, C) with binary spike output
+        """
+        frames = jnp.array(frames, dtype=jnp.float32)
+        if frames.ndim != 4:
+            raise ValueError(f"Expected 4D frames (T, H, W, C), got shape {frames.shape}")
+
+        T, H, W, C = frames.shape
+        spikes = jnp.zeros_like(frames, dtype=jnp.uint8)
+        membrane = jnp.zeros((H, W, C), dtype=jnp.float32)
+
+        def _step(carry, frame_t):
+            membrane, spikes_seq = carry
+            # Compute delta
+            delta = jnp.abs(frame_t - membrane)
+            # Emit spike if delta exceeds threshold
+            spike_t = (delta > threshold).astype(jnp.uint8)
+            # Reset membrane on spike
+            membrane = membrane + spike_t * jnp.sign(frame_t - membrane) * threshold
+            return (membrane, spike_t), spike_t
+
+        _, spikes_all = jax.lax.scan(_step, (membrane, spikes[0]), frames)
+        return spikes_all
+
+    return jax.jit(_call)
