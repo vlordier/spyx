@@ -19,6 +19,12 @@ except ImportError:
 
 State = namedtuple("State", "obs labels")
 
+
+def _drop_remainder(arr, cutoff):
+    if cutoff == 0:
+        return arr
+    return arr[:-cutoff]
+
 class MNIST_loader(): # change this so that it just returns either rate or temporal mnist...
     """
     Dataloader for the MNIST dataset. The data is returned in a packed format after using the pixel intensities as the p-value for sampling from
@@ -80,7 +86,11 @@ class MNIST_loader(): # change this so that it just returns either rate or tempo
                           collate_fn=tonic.collation.PadTensors(batch_first=True), drop_last=True, shuffle=False))
         
         x_train, y_train = next(train_dl)
-        self.x_train = jnp.packbits(rate_code(jnp.array(x_train, dtype=jnp.uint8), self.sample_T, key1), axis=1)
+        mnist_rate_code = rate_code(self.sample_T, self.max_rate)
+        self.x_train = jnp.packbits(
+            mnist_rate_code(jnp.array(x_train, dtype=jnp.float32), key1),
+            axis=1,
+        )
         self.y_train = jnp.array(y_train, dtype=jnp.uint8)
         ############################
         
@@ -91,7 +101,10 @@ class MNIST_loader(): # change this so that it just returns either rate or tempo
                           collate_fn=tonic.collation.PadTensors(batch_first=True), drop_last=True, shuffle=False))
         
         x_val, y_val = next(val_dl)
-        self.x_val = jnp.packbits(rate_code(jnp.array(x_val, dtype=jnp.uint8), self.sample_T, key2), axis=1)
+        self.x_val = jnp.packbits(
+            mnist_rate_code(jnp.array(x_val, dtype=jnp.float32), key2),
+            axis=1,
+        )
         self.y_val = jnp.array(y_val, dtype=jnp.uint8)
         ##########################
         # Test set setup
@@ -101,7 +114,10 @@ class MNIST_loader(): # change this so that it just returns either rate or tempo
                           collate_fn=tonic.collation.PadTensors(batch_first=True), drop_last=True, shuffle=True))
                 
         x_test, y_test = next(test_dl)
-        self.x_test = jnp.packbits(rate_code(jnp.array(x_test, dtype=jnp.uint8), self.sample_T, key3), axis=1)
+        self.x_test = jnp.packbits(
+            mnist_rate_code(jnp.array(x_test, dtype=jnp.float32), key3),
+            axis=1,
+        )
         self.y_test = jnp.array(y_test, dtype=jnp.uint8)
 
 
@@ -110,8 +126,8 @@ class MNIST_loader(): # change this so that it just returns either rate or tempo
         def _train_epoch(shuffle_key):
             cutoff = self.train_len % self.batch_size
             
-            obs = jax.random.permutation(shuffle_key, self.x_train, axis=0)[:-cutoff] # self.x_train[:-cutoff]
-            labels = jax.random.permutation(shuffle_key, self.y_train, axis=0)[:-cutoff] # self.y_train[:-cutoff]
+            obs = _drop_remainder(jax.random.permutation(shuffle_key, self.x_train, axis=0), cutoff)
+            labels = _drop_remainder(jax.random.permutation(shuffle_key, self.y_train, axis=0), cutoff)
             
             obs = jnp.reshape(obs, (-1, self.batch_size) + obs.shape[1:])
             labels = jnp.reshape(labels, (-1, self.batch_size))
@@ -124,8 +140,8 @@ class MNIST_loader(): # change this so that it just returns either rate or tempo
         def _val_epoch():
             cutoff = self.val_len % self.batch_size
             
-            x_val = self.x_val[:-cutoff]
-            y_val = self.y_val[:-cutoff]
+            x_val = _drop_remainder(self.x_val, cutoff)
+            y_val = _drop_remainder(self.y_val, cutoff)
             
             obs = jnp.reshape(x_val, (-1, self.batch_size) + x_val.shape[1:])
             labels = jnp.reshape(y_val, (-1, self.batch_size))
@@ -139,8 +155,8 @@ class MNIST_loader(): # change this so that it just returns either rate or tempo
         def _test_epoch():
             cutoff = self.test_len % self.batch_size
             
-            x_test = self.x_test[:-cutoff]
-            y_test = self.y_test[:-cutoff]
+            x_test = _drop_remainder(self.x_test, cutoff)
+            y_test = _drop_remainder(self.y_test, cutoff)
             
             obs = jnp.reshape(x_test, (-1, self.batch_size) + x_test.shape[1:])
             labels = jnp.reshape(y_test, (-1, self.batch_size))
@@ -234,8 +250,8 @@ class NMNIST_loader():
         def _train_epoch(shuffle_key):
             cutoff = self.train_len % self.batch_size
             
-            obs = jax.random.permutation(shuffle_key, self.x_train, axis=0)[:-cutoff] # self.x_train[:-cutoff]
-            labels = jax.random.permutation(shuffle_key, self.y_train, axis=0)[:-cutoff] # self.y_train[:-cutoff]
+            obs = _drop_remainder(jax.random.permutation(shuffle_key, self.x_train, axis=0), cutoff)
+            labels = _drop_remainder(jax.random.permutation(shuffle_key, self.y_train, axis=0), cutoff)
             
             obs = jnp.reshape(obs, (-1, self.batch_size) + obs.shape[1:])
             labels = jnp.reshape(labels, (-1, self.batch_size))
@@ -248,8 +264,8 @@ class NMNIST_loader():
         def _val_epoch():
             cutoff = self.val_len % self.batch_size
             
-            x_val = self.x_val[:-cutoff]
-            y_val = self.y_val[:-cutoff]
+            x_val = _drop_remainder(self.x_val, cutoff)
+            y_val = _drop_remainder(self.y_val, cutoff)
             
             obs = jnp.reshape(x_val, (-1, self.batch_size) + x_val.shape[1:])
             labels = jnp.reshape(y_val, (-1, self.batch_size))
@@ -263,8 +279,8 @@ class NMNIST_loader():
         def _test_epoch():
             cutoff = self.test_len % self.batch_size
             
-            x_test = self.x_test[:-cutoff]
-            y_test = self.y_test[:-cutoff]
+            x_test = _drop_remainder(self.x_test, cutoff)
+            y_test = _drop_remainder(self.y_test, cutoff)
             
             obs = jnp.reshape(x_test, (-1, self.batch_size) + x_test.shape[1:])
             labels = jnp.reshape(y_test, (-1, self.batch_size))
@@ -396,8 +412,8 @@ class SHD_loader():
         def _train_epoch(shuffle_key):
             cutoff = self.train_len % self.batch_size
             
-            obs = jax.random.permutation(shuffle_key, self.x_train, axis=0)[:-cutoff] # self.x_train[:-cutoff]
-            labels = jax.random.permutation(shuffle_key, self.y_train, axis=0)[:-cutoff] # self.y_train[:-cutoff]
+            obs = _drop_remainder(jax.random.permutation(shuffle_key, self.x_train, axis=0), cutoff)
+            labels = _drop_remainder(jax.random.permutation(shuffle_key, self.y_train, axis=0), cutoff)
             
             obs = jnp.reshape(obs, (-1, self.batch_size) + obs.shape[1:])
             labels = jnp.reshape(labels, (-1, self.batch_size))
@@ -410,8 +426,8 @@ class SHD_loader():
         def _val_epoch():
             cutoff = self.val_len % self.batch_size
             
-            x_val = self.x_val[:-cutoff]
-            y_val = self.y_val[:-cutoff]
+            x_val = _drop_remainder(self.x_val, cutoff)
+            y_val = _drop_remainder(self.y_val, cutoff)
             
             obs = jnp.reshape(x_val, (-1, self.batch_size) + x_val.shape[1:])
             labels = jnp.reshape(y_val, (-1, self.batch_size))
@@ -425,8 +441,8 @@ class SHD_loader():
         def _test_epoch():
             cutoff = self.test_len % self.batch_size
             
-            x_test = self.x_test[:-cutoff]
-            y_test = self.y_test[:-cutoff]
+            x_test = _drop_remainder(self.x_test, cutoff)
+            y_test = _drop_remainder(self.y_test, cutoff)
             
             obs = jnp.reshape(x_test, (-1, self.batch_size) + x_test.shape[1:])
             labels = jnp.reshape(y_test, (-1, self.batch_size))

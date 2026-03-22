@@ -56,10 +56,18 @@ def rate_code(num_steps, max_r=0.75):
     Currently Assumes input values have been rescaled to between 0 and 1.
     """
 
+    if num_steps <= 0:
+        raise ValueError("num_steps must be > 0")
+    if not 0.0 <= max_r <= 1.0:
+        raise ValueError("max_r must be in [0, 1]")
+
     def _call(data, key):
-        data = jnp.array(data, dtype=jnp.float16)
+        # Clip to a valid Bernoulli domain while preserving numerical precision.
+        data = jnp.array(data, dtype=jnp.float32)
+        data = jnp.clip(data, 0.0, 1.0)
         unrolled_data = jnp.repeat(data, num_steps, axis=1)
-        return jax.random.bernoulli(key, unrolled_data*max_r).astype(jnp.uint8)
+        probs = jnp.clip(unrolled_data * max_r, 0.0, 1.0)
+        return jax.random.bernoulli(key, probs).astype(jnp.uint8)
     
     return jax.jit(_call)
 
