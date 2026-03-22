@@ -1,16 +1,15 @@
+from collections import namedtuple
+
 import jax
 import jax.numpy as jnp
-import haiku as hk
-
-from collections import namedtuple
 
 try:
     import numpy as np
     import tonic
-    from tonic import datasets, transforms
     import torchvision as tv
-    from torch.utils.data import DataLoader, Subset
     from sklearn.model_selection import train_test_split
+    from tonic import datasets, transforms
+    from torch.utils.data import DataLoader, Subset
 
     from .data import rate_code
     optional_dependencies_installed = True
@@ -19,7 +18,7 @@ except ImportError:
 
 State = namedtuple("State", "obs labels")
 
-class MNIST_loader(): # change this so that it just returns either rate or temporal mnist...
+class MNIST_loader: # change this so that it just returns either rate or temporal mnist...
     """
     Dataloader for the MNIST dataset. The data is returned in a packed format after using the pixel intensities as the p-value for sampling from
     a Bernoulli distribution.
@@ -70,7 +69,7 @@ class MNIST_loader(): # change this so that it just returns either rate or tempo
 
         # to help with trying to do neuroevolution since the full dataset is a bit much for evolving convnets...
         train_indices = train_indices[:int(len(train_indices)*data_subsample)]
-        val_indicies  = val_indices[:int(len(val_indices)*data_subsample)]
+        val_indices = val_indices[:int(len(val_indices)*data_subsample)]
     
     
         train_split = Subset(train_val_dataset, train_indices)
@@ -152,7 +151,7 @@ class MNIST_loader(): # change this so that it just returns either rate or tempo
 
 ###############################################
 
-class NMNIST_loader():
+class NMNIST_loader:
     """
     Dataloading wrapper for the Neuromorphic MNIST dataset.
 
@@ -276,7 +275,7 @@ class NMNIST_loader():
 ###########################################################
 
 # Builds 2D tensors from data, with the time axis being packed to save memory. 
-class _SHD2Raster():
+class _SHD2Raster:
     """ 
     Tool for rastering SHD samples into frames. Packs bits along the temporal axis for memory efficiency. This means
         that the used will have to apply jnp.unpackbits(events, axis=<time axis>) prior to feeding the data to the network.
@@ -299,7 +298,7 @@ class _SHD2Raster():
         return tensor
     
 
-class SHD_loader():
+class SHD_loader:
     """
     Dataloading wrapper for the Spiking Heidelberg Dataset. The entire dataset is loaded to vRAM in a temporally compressed format. The user must
     apply jnp.unpackbits(events, axis=<time axis>) prior to feeding to an SNN. 

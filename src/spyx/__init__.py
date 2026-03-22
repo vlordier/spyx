@@ -1,14 +1,8 @@
-# spyx/__init__.py
-
-import jax
-import jax.numpy as jnp
-import haiku as hk
-
-from ._version import __version__
-from . import nn
-from . import nir
-from . import axn
-from . import fn
-from . import data
-from . import experimental
-from . import loaders
+from . import axn as axn
+from . import data as data
+from . import experimental as experimental
+from . import fn as fn
+from . import loaders as loaders
+from . import nir as nir
+from . import nn as nn
+from ._version import __version__ as __version__
