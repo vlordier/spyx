@@ -18,6 +18,24 @@ def _module_ast(path: Path) -> ast.Module:
     return ast.parse(path.read_text())
 
 
+def _init_public_bindings(path: Path) -> set[str]:
+    mod = _module_ast(path)
+    names: set[str] = set()
+    for node in ast.walk(mod):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[-1])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name != "*":
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+    return names
+
+
 def _public_classes(path: Path) -> set[str]:
     mod = _module_ast(path)
     return {
@@ -131,8 +149,8 @@ def test_fn_signature_compatibility():
 
 
 def test_top_level_init_surface_mentions_expected_modules():
-    spyx_init = SPYX_INIT.read_text()
-    mlx_init = MLX_INIT.read_text()
+    spyx_names = _init_public_bindings(SPYX_INIT)
+    mlx_names = _init_public_bindings(MLX_INIT)
     for token in ["nn", "axn", "fn", "data", "experimental", "loaders", "nir"]:
-        assert token in spyx_init
-        assert token in mlx_init
+        assert token in spyx_names
+        assert token in mlx_names
