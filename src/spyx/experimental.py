@@ -1,8 +1,9 @@
+import haiku as hk
 import jax
 import jax.numpy as jnp
-import haiku as hk
 
 from .axn import arctan
+
 
 def sigmoid_bernoulli(k=10, threshold=1., max_prob=0.8):
 

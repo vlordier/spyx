@@ -46,7 +46,25 @@ dev = [
     "mkdocs-jupyter>=0.25.1",
     "mkdocs-material>=9.7.1",
     "mkdocstrings[python]>=1.0.0",
+    "pytest>=8.0",
+    "ruff>=0.9",
+    "ty>=0.0.1a6",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/spyx"]
+
+[tool.ruff]
+src = ["src"]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = [
+    "E501",  # line too long — existing docstrings and comments exceed 88 chars
+    "E741",  # ambiguous variable names (I, l, O) — used as domain-specific notation (e.g. I for current)
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,11 +1,12 @@
+import warnings
+from collections.abc import Sequence
+
+import haiku as hk
 import jax
 import jax.numpy as jnp
-import haiku as hk
+
 from .axn import superspike
 
-from collections.abc import Sequence
-from typing import Optional, Union
-import warnings
 
 #needs fixed.
 class ALIF(hk.RNNCore): 
@@ -428,8 +429,8 @@ def PopulationCode(num_classes):
 
 def _infer_shape(
     x: jax.Array,
-    size: Union[int, Sequence[int]],
-    channel_axis: Optional[int] = -1,
+    size: int | Sequence[int],
+    channel_axis: int | None = -1,
 ) -> tuple[int, ...]:
   """Infer shape for pooling window or strides."""
   if isinstance(size, int):
@@ -460,17 +461,18 @@ _VMAP_SHAPE_INFERENCE_WARNING = (
 
 
 def _warn_if_unsafe(window_shape, strides):
-  unsafe = lambda size: isinstance(size, int) and size != 1
+  def unsafe(size):
+      return isinstance(size, int) and size != 1
   if unsafe(window_shape) or unsafe(strides):
     warnings.warn(_VMAP_SHAPE_INFERENCE_WARNING, DeprecationWarning)
 
 
 def sum_pool(
     value: jax.Array,
-    window_shape: Union[int, Sequence[int]],
-    strides: Union[int, Sequence[int]],
+    window_shape: int | Sequence[int],
+    strides: int | Sequence[int],
     padding: str,
-    channel_axis: Optional[int] = -1,
+    channel_axis: int | None = -1,
 ) -> jax.Array:
   """Sum pool.
 
@@ -502,11 +504,11 @@ class SumPool(hk.Module):
 
   def __init__(
       self,
-      window_shape: Union[int, Sequence[int]],
-      strides: Union[int, Sequence[int]],
+      window_shape: int | Sequence[int],
+      strides: int | Sequence[int],
       padding: str,
-      channel_axis: Optional[int] = -1,
-      name: Optional[str] = None,
+      channel_axis: int | None = -1,
+      name: str | None = None,
   ):
     """Sum pool.
 

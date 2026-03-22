@@ -1,19 +1,11 @@
+import haiku as hk
 import jax
 import jax.numpy as jnp
-
 import nir
 import numpy as np
-import haiku as hk
 
-from .nn import IF
-from .nn import LIF
-from .nn import CuBaLIF
+from .nn import IF, LIF, RIF, RLIF, CuBaLIF, RCuBaLIF, SumPool
 
-from .nn import RIF
-from .nn import RLIF
-from .nn import RCuBaLIF
-
-from .nn import SumPool
 
 def reorder_layers(init_params, trained_params):
     """
@@ -223,6 +215,7 @@ def _nir_node_to_spyx_params(node_pair: nir.NIRNode, dt: float):
     elif isinstance(node, nir.Affine):
         # NOTE: node.weight, node.bias are npy arrays
         tau = 1
+        w_in = None
         if isinstance(next_node, nir.LIF):
             tau = next_node.tau
         elif isinstance(next_node, nir.CubaLIF):
@@ -250,6 +243,8 @@ def _nir_node_to_spyx_params(node_pair: nir.NIRNode, dt: float):
 
     elif isinstance(node, nir.Linear):
         # NOTE: node.weight
+        tau = 1
+        w_in = None
         if isinstance(next_node, nir.LIF):
             tau = next_node.tau
         elif isinstance(next_node, nir.LI):
@@ -281,6 +276,8 @@ def _nir_node_to_spyx_params(node_pair: nir.NIRNode, dt: float):
     elif isinstance(node, nir.Conv2d):
         # NOTE: node.bias, node.weight
         # node.dilation, node.groups, node.padding, node.stride
+        tau = 1
+        w_in = None
         if isinstance(next_node, nir.LIF):
             tau = next_node.tau
         elif isinstance(next_node, nir.CubaLIF):
