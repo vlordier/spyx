@@ -21,7 +21,6 @@ if str(SPYX_SRC) not in sys.path:
     sys.path.insert(0, str(SPYX_SRC))
 
 import spyx.axn as spyx_axn  # noqa: E402
-import spyx.nn as spyx_nn  # noqa: E402
 import spyx_mlx.nn as mlx_nn  # noqa: E402
 
 
@@ -34,17 +33,84 @@ def _state_for(neuron: str, batch: int, hidden: int):
 def _spyx_transformed(neuron: str, hidden: int):
     hidden_shape = (hidden,)
     if neuron == "IF":
-        klass = spyx_nn.IF
-        kwargs = {"threshold": 1.0}
+        threshold = 1.0
+
+        def model(xs, s0):
+            spike_fn = spyx_axn.superspike()
+
+            def step_fn(v, x_t):
+                spikes = spike_fn(v - threshold)
+                v = v + x_t - spikes * threshold
+                return v, spikes
+
+            sf, ys = jax.lax.scan(step_fn, s0, xs)
+            return ys, sf
+
+        return hk.without_apply_rng(hk.transform(model))
     elif neuron == "LIF":
-        klass = spyx_nn.LIF
-        kwargs = {"beta": 0.9, "threshold": 1.0}
+        threshold = 1.0
+
+        def model(xs, s0):
+            beta = hk.get_parameter("beta", [], init=hk.initializers.Constant(0.9))
+            beta = jnp.clip(beta, 0.0, 1.0)
+            spike_fn = spyx_axn.superspike()
+
+            def step_fn(v, x_t):
+                spikes = spike_fn(v - threshold)
+                v = beta * v + x_t - spikes * threshold
+                return v, spikes
+
+            sf, ys = jax.lax.scan(step_fn, s0, xs)
+            return ys, sf
+
+        return hk.without_apply_rng(hk.transform(model))
     elif neuron == "ALIF":
-        klass = spyx_nn.ALIF
-        kwargs = {"beta": 0.9, "gamma": 0.9, "threshold": 1.0}
+        threshold = 1.0
+
+        def model(xs, s0):
+            beta = hk.get_parameter("beta", [], init=hk.initializers.Constant(0.9))
+            gamma = hk.get_parameter("gamma", [], init=hk.initializers.Constant(0.9))
+            beta = jnp.clip(beta, 0.0, 1.0)
+            gamma = jnp.clip(gamma, 0.0, 1.0)
+            spike_fn = spyx_axn.superspike()
+
+            def step_fn(vt, x_t):
+                v, t = jnp.split(vt, 2, axis=-1)
+                thresh = threshold + t
+                spikes = spike_fn(v - thresh)
+                v = beta * v + x_t - spikes * thresh
+                t = gamma * t + (1.0 - gamma) * spikes
+                vt = jnp.concatenate([v, t], axis=-1)
+                return vt, spikes
+
+            sf, ys = jax.lax.scan(step_fn, s0, xs)
+            return ys, sf
+
+        return hk.without_apply_rng(hk.transform(model))
     elif neuron == "CuBaLIF":
-        klass = spyx_nn.CuBaLIF
-        kwargs = {"alpha": 0.8, "beta": 0.9, "threshold": 1.0}
+        threshold = 1.0
+
+        def model(xs, s0):
+            alpha = hk.get_parameter("alpha", [], init=hk.initializers.Constant(0.8))
+            beta = hk.get_parameter("beta", [], init=hk.initializers.Constant(0.9))
+            alpha = jnp.clip(alpha, 0.0, 1.0)
+            beta = jnp.clip(beta, 0.0, 1.0)
+            spike_fn = spyx_axn.superspike()
+
+            def step_fn(vi, x_t):
+                v, i = jnp.split(vi, 2, axis=-1)
+                spikes = spike_fn(v - threshold)
+                reset = spikes * threshold
+                v = v - reset
+                i = alpha * i + x_t
+                v = beta * v + i - reset
+                vi = jnp.concatenate([v, i], axis=-1)
+                return vi, spikes
+
+            sf, ys = jax.lax.scan(step_fn, s0, xs)
+            return ys, sf
+
+        return hk.without_apply_rng(hk.transform(model))
     elif neuron == "RLIF":
         threshold = 1.0
 
@@ -70,18 +136,6 @@ def _spyx_transformed(neuron: str, hidden: int):
         return hk.without_apply_rng(hk.transform(model))
     else:
         raise ValueError(f"Unsupported neuron: {neuron}")
-
-    def model(xs, s0):
-        cell = klass(hidden_shape=hidden_shape, activation=spyx_axn.superspike(), **kwargs)
-
-        def step_fn(state, x_t):
-            out, new_state = cell(x_t, state)
-            return new_state, out
-
-        sf, ys = jax.lax.scan(step_fn, s0, xs)
-        return ys, sf
-
-    return hk.without_apply_rng(hk.transform(model))
 
 
 def _mlx_runner(neuron: str, hidden: int):
@@ -184,6 +238,27 @@ def _forward_mlx(
 def test_jax_mlx_direct_parity_small_rollout(neuron):
     rng = np.random.default_rng(321)
     steps, batch, hidden = 5, 3, 4
+    atol = 1e-5
+    rtol = 1e-5
+
+    xs_np = rng.standard_normal((steps, batch, hidden), dtype=np.float32)
+    s0_np = _state_for(neuron, batch, hidden)
+    w_rec_np = None
+    if neuron == "RLIF":
+        w_rec_np = rng.standard_normal((hidden, hidden), dtype=np.float32) * 0.2
+
+    y_spyx, s_spyx = _forward_spyx(neuron, xs_np, s0_np, w_rec_np=w_rec_np)
+    y_mlx, s_mlx = _forward_mlx(neuron, xs_np, s0_np, w_rec_np=w_rec_np)
+
+    np.testing.assert_allclose(y_mlx, y_spyx, atol=atol, rtol=rtol)
+    np.testing.assert_allclose(s_mlx, s_spyx, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("neuron", ["IF", "LIF", "ALIF", "CuBaLIF", "RLIF"])
+@pytest.mark.parametrize("seed", [11, 29, 47])
+def test_jax_mlx_direct_parity_long_rollout_trials(neuron, seed):
+    rng = np.random.default_rng(seed)
+    steps, batch, hidden = 32, 2, 8
     atol = 1e-5
     rtol = 1e-5
 
