@@ -23,6 +23,40 @@ def test_ternarize_weights_outputs_three_values():
     assert jnp.array_equal(y, expected)
 
 
+def test_quantize_fixed_floor_rounding():
+    cfg = qx.FixedPointConfig(total_bits=8, frac_bits=2, rounding="floor")
+    x = jnp.array([-0.24, 0.24, 0.49], dtype=jnp.float32)
+    y = qx.quantize_fixed(x, cfg, ste=False)
+    expected = jnp.array([-0.25, 0.0, 0.25], dtype=jnp.float32)
+    assert jnp.allclose(y, expected, atol=1e-6)
+
+
+def test_quantize_fixed_max_abs_mode_clips_to_range():
+    cfg = qx.FixedPointConfig(total_bits=8, frac_bits=2, scale_mode="max_abs")
+    x = jnp.array([-2.0, -1.0, 0.0, 1.0, 2.0], dtype=jnp.float32)
+    y = qx.quantize_fixed(x, cfg, ste=False)
+    assert jnp.max(jnp.abs(y)) <= 2.0 + 1e-6
+
+
+def test_ternarize_weights_mean_scaled_strategy():
+    w = jnp.array([-0.4, -0.1, 0.0, 0.09, 0.4], dtype=jnp.float32)
+    y = qx.ternarize_weights(
+        w,
+        threshold=0.5,
+        strategy="mean_scaled_threshold",
+        ste=False,
+    )
+    assert set(jnp.unique(y).tolist()).issubset({-1.0, 0.0, 1.0})
+
+
+def test_ternarize_weights_topk_strategy():
+    w = jnp.array([-0.9, -0.3, -0.1, 0.1, 0.4, 0.8], dtype=jnp.float32)
+    y = qx.ternarize_weights(w, strategy="topk", topk_ratio=0.34, ste=False)
+    nonzero = int(jnp.count_nonzero(y))
+    assert nonzero >= 1
+    assert set(jnp.unique(y).tolist()).issubset({-1.0, 0.0, 1.0})
+
+
 def test_fixed_point_linear_forward_shape():
     def model(x):
         return qx.FixedPointLinear(5, cfg=qx.FixedPointConfig(8, 3))(x)
@@ -43,6 +77,22 @@ def test_ternary_linear_forward_shape():
     params = transformed.init(jax.random.PRNGKey(1), x)
     y = transformed.apply(params, x)
     assert y.shape == (7, 3)
+
+
+def test_ternary_fixed_point_linear_topk_forward_shape():
+    def model(x):
+        return qx.TernaryFixedPointLinear(
+            4,
+            strategy="topk",
+            topk_ratio=0.25,
+            cfg=qx.FixedPointConfig(total_bits=8, frac_bits=3),
+        )(x)
+
+    x = jnp.ones((3, 6), dtype=jnp.float32)
+    transformed = hk.without_apply_rng(hk.transform(model))
+    params = transformed.init(jax.random.PRNGKey(3), x)
+    y = transformed.apply(params, x)
+    assert y.shape == (3, 4)
 
 
 def test_fixed_point_lif_state_shape():

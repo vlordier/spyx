@@ -1,4 +1,6 @@
 import dataclasses
+import math
+from typing import Literal
 
 import haiku as hk
 import jax
@@ -13,6 +15,9 @@ class FixedPointConfig:
 
     total_bits: int = 16
     frac_bits: int = 8
+    rounding: Literal["nearest", "floor", "ceil"] = "nearest"
+    scale_mode: Literal["fixed", "max_abs"] = "fixed"
+    eps: float = 1e-8
 
     @property
     def scale(self) -> float:
@@ -34,9 +39,27 @@ def _ste(discrete: jnp.ndarray, continuous: jnp.ndarray) -> jnp.ndarray:
 
 
 def quantize_fixed(x: jnp.ndarray, cfg: FixedPointConfig, ste: bool = True) -> jnp.ndarray:
-    scaled = jnp.round(x * cfg.scale)
+    if cfg.scale_mode == "fixed":
+        scale = cfg.scale
+    else:
+        # Dynamic symmetric scale to match tensor range to int range.
+        max_abs = jnp.max(jnp.abs(x))
+        denom = jnp.maximum(max_abs, cfg.eps)
+        scale = cfg.qmax / denom
+
+    x_scaled = x * scale
+    if cfg.rounding == "nearest":
+        scaled = jnp.round(x_scaled)
+    elif cfg.rounding == "floor":
+        scaled = jnp.floor(x_scaled)
+    elif cfg.rounding == "ceil":
+        scaled = jnp.ceil(x_scaled)
+    else:
+        msg = f"Unsupported rounding strategy: {cfg.rounding}"
+        raise ValueError(msg)
+
     clipped = jnp.clip(scaled, cfg.qmin, cfg.qmax)
-    quantized = clipped / cfg.scale
+    quantized = clipped / scale
     if not ste:
         return quantized
     return _ste(quantized, x)
@@ -45,10 +68,27 @@ def quantize_fixed(x: jnp.ndarray, cfg: FixedPointConfig, ste: bool = True) -> j
 def ternarize_weights(
     w: jnp.ndarray,
     threshold: float = 0.05,
+    strategy: Literal["threshold", "mean_scaled_threshold", "topk"] = "threshold",
+    topk_ratio: float = 0.1,
     ste: bool = True,
 ) -> jnp.ndarray:
-    positive = w > threshold
-    negative = w < -threshold
+    if strategy == "threshold":
+        thresh = threshold
+    elif strategy == "mean_scaled_threshold":
+        thresh = threshold * jnp.mean(jnp.abs(w))
+    elif strategy == "topk":
+        flat = jnp.ravel(jnp.abs(w))
+        size = flat.shape[0]
+        k = max(1, min(size, int(math.ceil(topk_ratio * size))))
+        idx = size - k
+        kth = jnp.sort(flat)[idx]
+        thresh = kth
+    else:
+        msg = f"Unsupported ternary strategy: {strategy}"
+        raise ValueError(msg)
+
+    positive = w > thresh
+    negative = w < -thresh
     ternary = jnp.where(positive, 1.0, jnp.where(negative, -1.0, 0.0)).astype(w.dtype)
     if not ste:
         return ternary
@@ -94,6 +134,8 @@ class TernaryLinear(hk.Module):
         self,
         output_size: int,
         threshold: float = 0.05,
+        strategy: Literal["threshold", "mean_scaled_threshold", "topk"] = "threshold",
+        topk_ratio: float = 0.1,
         cfg: FixedPointConfig | None = None,
         with_bias: bool = False,
         name: str = "TernaryLinear",
@@ -101,6 +143,8 @@ class TernaryLinear(hk.Module):
         super().__init__(name=name)
         self.output_size = output_size
         self.threshold = threshold
+        self.strategy = strategy
+        self.topk_ratio = topk_ratio
         self.cfg = cfg or FixedPointConfig()
         self.with_bias = with_bias
 
@@ -112,13 +156,25 @@ class TernaryLinear(hk.Module):
             init=hk.initializers.TruncatedNormal(),
         )
         x_q = quantize_fixed(x, self.cfg)
-        w_t = ternarize_weights(w, threshold=self.threshold)
+        w_t = ternarize_weights(
+            w,
+            threshold=self.threshold,
+            strategy=self.strategy,
+            topk_ratio=self.topk_ratio,
+        )
         y = jnp.matmul(x_q, w_t)
         y = quantize_fixed(y, self.cfg)
         if self.with_bias:
             b = hk.get_parameter("b", shape=(self.output_size,), init=jnp.zeros)
             y = quantize_fixed(y + quantize_fixed(b, self.cfg), self.cfg)
         return y
+
+
+class TernaryFixedPointLinear(TernaryLinear):
+    """Alias class for Stage C compatibility in experiment scripts."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, name="TernaryFixedPointLinear", **kwargs)
 
 
 class FixedPointLIF(hk.RNNCore):
