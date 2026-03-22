@@ -6,16 +6,11 @@ def heaviside(x):
     return jnp.where(x > 0, 1, 0).astype(x.dtype)
 
 def custom(bwd=lambda x: x, 
-           fwd=lambda x: heaviside(x)): # this is probably redundant and could just be fwd=heaviside
+           fwd=lambda x: heaviside(x)):
     """
-    This function serves as the activation function for the SNNs, allowing for custom definitions of both surrogate gradients for backwards
-    passes as well as substitution of the Heaviside function for relaxations such as sigmoids. 
+    Build a surrogate-gradient spike activation with customizable forward and backward definitions.
 
-    It is assumed that the input to this layer has already had it's threshold subtracted within the neuron model dynamics.
-
-    The default behavior is a Heaviside forward activation with a stragiht through estimator surrogate gradient.
-    
-    :bwd: Function that calculates the gradient to be used in the backwards pass.
+    :bwd: Function that calculates the surrogate gradient during the backward pass.
     :fwd: Forward activation/spiking function. Default is the heaviside function centered at 0.
     :return: A JIT compiled activation function comprised of the specified forward and backward functions.
     """
@@ -25,6 +20,12 @@ def custom(bwd=lambda x: x,
         return fwd(x), lambda g: g * bwd(x)
 
     return jax.jit(f)
+
+
+def straight_through():
+    """Heaviside forward with unit-gradient straight-through estimator."""
+
+    return custom(lambda x: jnp.ones_like(x), heaviside)
 
 def tanh(k=1):
     """Hyperbolic Tangent activation.
@@ -119,3 +120,19 @@ def superspike(k=25):
         return 1 / (1 + k*jnp.abs(x))**2
     
     return custom(grad_superspike, heaviside)
+
+
+def sigmoid(k=5):
+    """
+    Sigmoid-derived surrogate gradient around a Heaviside forward pass.
+
+    :k: Slope factor for the sigmoid surrogate.
+    :return: JIT compiled sigmoid surrogate gradient function.
+    """
+
+    def grad_sigmoid(x):
+        sx = jax.nn.sigmoid(k * x)
+        return k * sx * (1 - sx)
+
+    return custom(grad_sigmoid, heaviside)
+
