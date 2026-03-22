@@ -258,6 +258,81 @@ def test_recurrent_models_match_reference_over_multiple_steps(cell_name):
     np.testing.assert_allclose(state_mlx, state_ref, atol=1e-6, rtol=0.0)
 
 
+@pytest.mark.parametrize("seed", [0, 1, 7, 13, 42])
+def test_randomized_one_step_parity_smoke(seed):
+    rng = np.random.default_rng(seed)
+    batch, hidden = 3, 4
+    threshold = 1.0
+    alpha = 0.8
+    beta = 0.9
+    gamma = 0.9
+
+    x_np = rng.standard_normal((batch, hidden), dtype=np.float32)
+    v_np = rng.standard_normal((batch, hidden), dtype=np.float32)
+    vt_np = rng.standard_normal((batch, hidden * 2), dtype=np.float32)
+    vi_np = rng.standard_normal((batch, hidden * 2), dtype=np.float32)
+    w_np = rng.standard_normal((hidden, hidden), dtype=np.float32) * 0.2
+
+    # IF
+    if_cell = IF(hidden_shape=(hidden,), threshold=threshold)
+    s_mlx, st_mlx = if_cell(mx.array(x_np), mx.array(v_np))
+    s_ref, st_ref = if_step(x_np, v_np, threshold)
+    np.testing.assert_allclose(_to_np(s_mlx), s_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(st_mlx), st_ref, atol=1e-6, rtol=0.0)
+
+    # LIF
+    lif_cell = LIF(hidden_shape=(hidden,), beta_init=beta, threshold=threshold)
+    s_mlx, st_mlx = lif_cell(mx.array(x_np), mx.array(v_np))
+    s_ref, st_ref = lif_step(x_np, v_np, beta=beta, threshold=threshold)
+    np.testing.assert_allclose(_to_np(s_mlx), s_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(st_mlx), st_ref, atol=1e-6, rtol=0.0)
+
+    # ALIF
+    alif_cell = ALIF(hidden_shape=(hidden,), beta_init=beta, gamma_init=gamma, threshold=threshold)
+    s_mlx, st_mlx = alif_cell(mx.array(x_np), mx.array(vt_np))
+    s_ref, st_ref = alif_step(x_np, vt_np, beta=beta, gamma=gamma, threshold=threshold)
+    np.testing.assert_allclose(_to_np(s_mlx), s_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(st_mlx), st_ref, atol=1e-6, rtol=0.0)
+
+    # CuBaLIF
+    cuba_cell = CuBaLIF(hidden_shape=(hidden,), alpha_init=alpha, beta_init=beta, threshold=threshold)
+    s_mlx, st_mlx = cuba_cell(mx.array(x_np), mx.array(vi_np))
+    s_ref, st_ref = cubalif_step(x_np, vi_np, alpha=alpha, beta=beta, threshold=threshold)
+    np.testing.assert_allclose(_to_np(s_mlx), s_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(st_mlx), st_ref, atol=1e-6, rtol=0.0)
+
+    # RIF
+    rif_cell = RIF(hidden_shape=(hidden,), threshold=threshold)
+    rif_cell.w_rec = mx.array(w_np)
+    s_mlx, st_mlx = rif_cell(mx.array(x_np), mx.array(v_np))
+    s_ref, st_ref = rif_step(x_np, v_np, w_rec=w_np, threshold=threshold)
+    np.testing.assert_allclose(_to_np(s_mlx), s_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(st_mlx), st_ref, atol=1e-6, rtol=0.0)
+
+    # RLIF
+    rlif_cell = RLIF(hidden_shape=(hidden,), beta_init=beta, threshold=threshold)
+    rlif_cell.w_rec = mx.array(w_np)
+    s_mlx, st_mlx = rlif_cell(mx.array(x_np), mx.array(v_np))
+    s_ref, st_ref = rlif_step(x_np, v_np, w_rec=w_np, beta=beta, threshold=threshold)
+    np.testing.assert_allclose(_to_np(s_mlx), s_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(st_mlx), st_ref, atol=1e-6, rtol=0.0)
+
+    # RCuBaLIF
+    rcuba_cell = RCuBaLIF(hidden_shape=(hidden,), alpha_init=alpha, beta_init=beta, threshold=threshold)
+    rcuba_cell.w_rec = mx.array(w_np)
+    s_mlx, st_mlx = rcuba_cell(mx.array(x_np), mx.array(vi_np))
+    s_ref, st_ref = rcubalif_step(
+        x_np,
+        vi_np,
+        w_rec=w_np,
+        alpha=alpha,
+        beta=beta,
+        threshold=threshold,
+    )
+    np.testing.assert_allclose(_to_np(s_mlx), s_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(st_mlx), st_ref, atol=1e-6, rtol=0.0)
+
+
 
 
 
