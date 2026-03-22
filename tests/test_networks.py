@@ -70,7 +70,7 @@ def test_li_matches_spyx_reference_one_step():
     np.testing.assert_allclose(_to_np(state_mlx), state_ref, atol=1e-6, rtol=0.0)
 
 
-def test_if_diverges_when_input_crosses_threshold():
+def test_if_matches_spyx_reference_when_input_crosses_threshold():
     threshold = 1.0
     x_np = np.array([[0.3]], dtype=np.float32)
     v_np = np.array([[0.8]], dtype=np.float32)
@@ -79,11 +79,11 @@ def test_if_diverges_when_input_crosses_threshold():
     spike_mlx, state_mlx = neuron(mx.array(x_np), mx.array(v_np))
     spike_ref, state_ref = _spyx_if_step(x_np, v_np, threshold=threshold)
 
-    assert not np.allclose(_to_np(spike_mlx), spike_ref, atol=1e-6, rtol=0.0)
-    assert not np.allclose(_to_np(state_mlx), state_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(spike_mlx), spike_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(state_mlx), state_ref, atol=1e-6, rtol=0.0)
 
 
-def test_if_diverges_at_exact_threshold_boundary():
+def test_if_matches_spyx_reference_at_exact_threshold_boundary():
     threshold = 1.0
     x_np = np.array([[0.0]], dtype=np.float32)
     v_np = np.array([[1.0]], dtype=np.float32)
@@ -92,10 +92,10 @@ def test_if_diverges_at_exact_threshold_boundary():
     spike_mlx, _ = neuron(mx.array(x_np), mx.array(v_np))
     spike_ref, _ = _spyx_if_step(x_np, v_np, threshold=threshold)
 
-    assert _to_np(spike_mlx)[0, 0] != spike_ref[0, 0]
+    np.testing.assert_allclose(_to_np(spike_mlx), spike_ref, atol=1e-6, rtol=0.0)
 
 
-def test_lif_diverges_when_new_voltage_crosses_threshold():
+def test_lif_matches_spyx_reference_when_new_voltage_crosses_threshold():
     beta = 0.9
     threshold = 1.0
     x_np = np.array([[0.3]], dtype=np.float32)
@@ -105,11 +105,11 @@ def test_lif_diverges_when_new_voltage_crosses_threshold():
     spike_mlx, state_mlx = neuron(mx.array(x_np), mx.array(v_np))
     spike_ref, state_ref = _spyx_lif_step(x_np, v_np, beta=beta, threshold=threshold)
 
-    assert not np.allclose(_to_np(spike_mlx), spike_ref, atol=1e-6, rtol=0.0)
-    assert not np.allclose(_to_np(state_mlx), state_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(spike_mlx), spike_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(state_mlx), state_ref, atol=1e-6, rtol=0.0)
 
 
-def test_alif_diverges_under_spike_timing_difference():
+def test_alif_matches_spyx_reference():
     beta = 0.9
     gamma = 0.9
     threshold = 1.0
@@ -120,11 +120,11 @@ def test_alif_diverges_under_spike_timing_difference():
     spike_mlx, state_mlx = neuron(mx.array(x_np), mx.array(state_np))
     spike_ref, state_ref = _spyx_alif_step(x_np, state_np, beta=beta, gamma=gamma, threshold=threshold)
 
-    assert not np.allclose(_to_np(spike_mlx), spike_ref, atol=1e-6, rtol=0.0)
-    assert not np.allclose(_to_np(state_mlx), state_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(spike_mlx), spike_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(state_mlx), state_ref, atol=1e-6, rtol=0.0)
 
 
-def test_cubalif_diverges_due_to_reset_and_spike_order():
+def test_cubalif_matches_spyx_reference():
     alpha = 0.8
     beta = 0.9
     threshold = 1.0
@@ -136,7 +136,7 @@ def test_cubalif_diverges_due_to_reset_and_spike_order():
     spike_ref, state_ref = _spyx_cubalif_step(x_np, state_np, alpha=alpha, beta=beta, threshold=threshold)
 
     np.testing.assert_allclose(_to_np(spike_mlx), spike_ref, atol=1e-6, rtol=0.0)
-    assert not np.allclose(_to_np(state_mlx), state_ref, atol=1e-6, rtol=0.0)
+    np.testing.assert_allclose(_to_np(state_mlx), state_ref, atol=1e-6, rtol=0.0)
 
 
 
