@@ -722,6 +722,12 @@ def _event_pool_features(x: jnp.ndarray, event_threshold: float, pool_modes: tup
     return jnp.concatenate(pooled_features, axis=-1), jnp.mean(event_mask)
 
 
+def _normalize_unit_interval(x: jnp.ndarray) -> jnp.ndarray:
+    x_min = jnp.min(x, axis=-1, keepdims=True)
+    x_max = jnp.max(x, axis=-1, keepdims=True)
+    return (x - x_min) / jnp.maximum(x_max - x_min, 1e-6)
+
+
 class LogPolarFoveatedConvSNN(hk.Module):
     """Log-polar foveated convolutional SNN with an explicit geometric front-end."""
 
@@ -1372,6 +1378,153 @@ class EventDrivenPoolingSNN(hk.Module):
             "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
             "active_ratio": jnp.mean(ar_seq),
             "pooled_features": pooled_seq,
+        }
+
+
+@dataclass
+class TinySpikingAutoencoderConfig:
+    input_dim: int
+    hidden_dim: int
+    latent_dim: int
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class TinySpikingAutoencoder(hk.Module):
+    """Compact sequence autoencoder with spiking encoder and decoder stages."""
+
+    def __init__(self, cfg: TinySpikingAutoencoderConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.enc_proj = hk.Linear(cfg.hidden_dim)
+        self.latent_proj = hk.Linear(cfg.latent_dim)
+        self.dec_proj = hk.Linear(cfg.hidden_dim)
+        self.recon_head = hk.Linear(cfg.input_dim)
+        self.enc_lif = snn.LIF((cfg.hidden_dim,), beta=cfg.beta, threshold=cfg.threshold)
+        self.latent_lif = snn.LIF((cfg.latent_dim,), beta=cfg.beta, threshold=cfg.threshold)
+        self.dec_lif = snn.LIF((cfg.hidden_dim,), beta=cfg.beta, threshold=cfg.threshold)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _ = x_seq.shape
+        enc_state = self.enc_lif.initial_state(batch)
+        latent_state = self.latent_lif.initial_state(batch)
+        dec_state = self.dec_lif.initial_state(batch)
+
+        def step(carry, x_t):
+            c_enc, c_latent, c_dec = carry
+            s_enc, c_enc = self.enc_lif(self.enc_proj(x_t), c_enc)
+            z_t, c_latent = self.latent_lif(self.latent_proj(s_enc), c_latent)
+            s_dec, c_dec = self.dec_lif(self.dec_proj(z_t), c_dec)
+            recon_t = self.recon_head(s_dec)
+            sr_t = jnp.stack([jnp.mean(s_enc), jnp.mean(z_t), jnp.mean(s_dec)])
+            return (c_enc, c_latent, c_dec), (recon_t, z_t, sr_t)
+
+        _, (recon_seq, latent_seq, sr_seq) = hk.scan(step, (enc_state, latent_state, dec_state), x_seq)
+        return _readout(recon_seq, self.cfg.readout), {
+            "recon_seq": recon_seq,
+            "latent_seq": latent_seq,
+            "spike_rate": jnp.mean(sr_seq, axis=0),
+            "reconstruction_error": jnp.mean(jnp.abs(recon_seq - x_seq)),
+        }
+
+
+@dataclass
+class PopulationCodingConfig:
+    input_dim: int
+    population_size: int
+    hidden_dim: int
+    output_dim: int
+    sigma: float = 0.2
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class PopulationCodedLIFMLP(hk.Module):
+    """Population-coded input expansion followed by a spiking MLP."""
+
+    def __init__(self, cfg: PopulationCodingConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.hidden = hk.Linear(cfg.hidden_dim)
+        self.head = hk.Linear(cfg.output_dim)
+        self.lif = snn.LIF((cfg.hidden_dim,), beta=cfg.beta, threshold=cfg.threshold)
+        self.centers = jnp.linspace(0.0, 1.0, cfg.population_size)
+
+    def _population_code(self, x_t: jnp.ndarray) -> jnp.ndarray:
+        x_norm = jax.nn.sigmoid(x_t)
+        diff = x_norm[..., None] - self.centers
+        code = jnp.exp(-0.5 * (diff / jnp.maximum(self.cfg.sigma, 1e-6)) ** 2)
+        return code.reshape(x_t.shape[0], -1)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _ = x_seq.shape
+        state = self.lif.initial_state(batch)
+
+        def step(carry, x_t):
+            code_t = self._population_code(x_t)
+            s_t, carry = self.lif(self.hidden(code_t), carry)
+            logits_t = self.head(s_t)
+            return carry, (logits_t, jnp.mean(s_t), jnp.mean(code_t))
+
+        _, (logits_seq, sr_seq, code_seq) = hk.scan(step, state, x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
+            "population_activity": jnp.asarray([jnp.mean(code_seq)]),
+        }
+
+
+@dataclass
+class LatencyCodingConfig:
+    input_dim: int
+    hidden_dim: int
+    output_dim: int
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class LatencyCodedSpikingHead(hk.Module):
+    """Time-to-first-spike style head using explicit latency-coded inputs."""
+
+    def __init__(self, cfg: LatencyCodingConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.hidden = hk.Linear(cfg.hidden_dim)
+        self.head = hk.Linear(cfg.output_dim)
+        self.lif = snn.LIF((cfg.hidden_dim,), beta=cfg.beta, threshold=cfg.threshold)
+
+    def _latency_code(self, x_seq: jnp.ndarray) -> jnp.ndarray:
+        steps = x_seq.shape[0]
+        static_x = jnp.mean(x_seq, axis=0)
+        x_norm = _normalize_unit_interval(static_x)
+        latency = jnp.round((1.0 - x_norm) * (steps - 1)).astype(jnp.int32)
+        time_index = jnp.arange(steps, dtype=jnp.int32)[:, None, None]
+        code = (time_index == latency[None, :, :]).astype(x_seq.dtype)
+        return code
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _ = x_seq.shape
+        state = self.lif.initial_state(batch)
+        coded_seq = self._latency_code(x_seq)
+
+        def step(carry, x_t):
+            s_t, carry = self.lif(self.hidden(x_t), carry)
+            logits_t = self.head(s_t)
+            return carry, (logits_t, s_t)
+
+        _, (logits_seq, spike_seq) = hk.scan(step, state, coded_seq)
+        spike_any = spike_seq > 0
+        first_spike = jnp.argmax(spike_any, axis=0)
+        has_spike = jnp.any(spike_any, axis=0)
+        last_idx = jnp.full_like(first_spike, coded_seq.shape[0] - 1)
+        first_spike = jnp.where(has_spike, first_spike, last_idx)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "first_spike_time": jnp.mean(first_spike.astype(jnp.float32), axis=-1),
+            "latency_code_density": jnp.mean(coded_seq),
         }
 
 

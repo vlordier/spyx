@@ -411,6 +411,61 @@ def test_event_driven_pooling_snn_forward_shape_and_pool_features():
     assert pooled_features.shape == (4, 2, cfg.channels * len(cfg.pool_modes))
 
 
+def test_tiny_spiking_autoencoder_forward_shape_and_aux():
+    cfg = fm.TinySpikingAutoencoderConfig(input_dim=10, hidden_dim=8, latent_dim=4)
+
+    def forward(x):
+        model = fm.TinySpikingAutoencoder(cfg)
+        recon, aux = model(x)
+        return recon, aux["spike_rate"], aux["latent_seq"], aux["reconstruction_error"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((5, 2, cfg.input_dim), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(32), x)
+    recon, spike_rate, latent_seq, recon_error = transformed.apply(params, x)
+
+    assert recon.shape == (2, cfg.input_dim)
+    assert spike_rate.shape == (3,)
+    assert latent_seq.shape == (5, 2, cfg.latent_dim)
+    assert jnp.asarray(recon_error).shape == ()
+
+
+def test_population_coded_lif_mlp_forward_shape_and_activity():
+    cfg = fm.PopulationCodingConfig(input_dim=6, population_size=5, hidden_dim=8, output_dim=3)
+
+    def forward(x):
+        model = fm.PopulationCodedLIFMLP(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["population_activity"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((5, 2, cfg.input_dim), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(33), x)
+    logits, spike_rate, population_activity = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (1,)
+    assert population_activity.shape == (1,)
+
+
+def test_latency_coded_spiking_head_forward_shape_and_timing():
+    cfg = fm.LatencyCodingConfig(input_dim=7, hidden_dim=9, output_dim=4)
+
+    def forward(x):
+        model = fm.LatencyCodedSpikingHead(cfg)
+        logits, aux = model(x)
+        return logits, aux["first_spike_time"], aux["latency_code_density"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.arange(5 * 2 * cfg.input_dim, dtype=jnp.float32).reshape((5, 2, cfg.input_dim))
+    params = transformed.init(jax.random.PRNGKey(34), x)
+    logits, first_spike_time, latency_density = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert first_spike_time.shape == (2,)
+    assert jnp.asarray(latency_density).shape == ()
+
+
 def test_router_and_gaze_head_shapes():
     gaze_cfg = fm.GazeControlConfig(input_dim=6, imu_dim=3, traj_dim=4, num_regions=9)
 

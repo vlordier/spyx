@@ -43,6 +43,9 @@ Status is tracked against reference implementations in [src/spyx/fpga_models.py]
 - [x] Predictive-coding block -> `PredictiveCodingSNNBlock`
 - [x] Collision + navigation multi-head -> `CollisionNavigationMultiHead`
 - [x] Hybrid SNN + classical filters pipeline -> `HybridClassicalFilterSNN`
+- [x] Tiny spiking autoencoder -> `TinySpikingAutoencoder`
+- [x] Population coding variant -> `PopulationCodedLIFMLP`
+- [x] Time-to-first-spike / latency-coded heads -> `LatencyCodedSpikingHead`
 - [x] Structured-sparse spiking CNN -> `StructuredSparseSpikingCNN`
 - [x] Event-driven pooling variants -> `EventDrivenPoolingSNN`
 - [x] Early-exit/anytime inference head -> `EarlyExitAnytimeSNN`
@@ -82,6 +85,9 @@ These exist as concrete reference modules in `src/spyx/fpga_models.py` and are c
 | Trajectory-conditioned encoder | `TrajectoryConditionedSpikingEncoder` |
 | Predictive-coding block | `PredictiveCodingSNNBlock` |
 | Hybrid SNN + classical filters pipeline | `HybridClassicalFilterSNN` |
+| Tiny spiking autoencoder | `TinySpikingAutoencoder` |
+| Population coding variant | `PopulationCodedLIFMLP` |
+| Time-to-first-spike / latency-coded heads | `LatencyCodedSpikingHead` |
 | Structured-sparse spiking CNN | `StructuredSparseSpikingCNN` |
 | Event-driven pooling variants | `EventDrivenPoolingSNN` |
 | Early-exit / anytime head | `EarlyExitAnytimeSNN` |
@@ -108,10 +114,8 @@ These are described in the roadmap but do not yet have dedicated implementations
 | Spherical-geometry spike-routing graph | Not implemented |
 | Spherical harmonic / frequency-domain SNN | Not implemented |
 | Small liquid state machine | Not implemented |
-| Tiny spiking autoencoder | Not implemented |
 | Delay-based SNN | Not implemented |
-| Population coding as dedicated architecture family | Not implemented as a model family |
-| Spike-frequency vs time-to-first-spike coding family | Not implemented as dedicated variants |
+| Spike-frequency coding family | Not implemented as dedicated variants |
 | Stereo foveated correlation family with disparity bins / left-right consistency | Partially implemented via `StereoDisparityCorrelationSNN`; not yet foveated |
 | Hard-gated mixture-of-experts family | Not implemented |
 | Frequency-domain or graph-based spherical models | Not implemented |
@@ -120,15 +124,11 @@ These are described in the roadmap but do not yet have dedicated implementations
 This table focuses on the remaining gaps and ranks them by implementation value rather than novelty.
 
 ### Implement Next
-| Item | Current state in Spyx | Effort | Why next |
-| --- | --- | --- | --- |
-| Tiny spiking autoencoder | Not implemented | Low-Medium | Useful for latent compression studies |
-| Population coding variant | Not implemented as a model family | Low | Small change with robustness value |
+No remaining low-complexity gaps are queued here after the latest implementation pass.
 
 ### Implement Later
 | Item | Current state in Spyx | Effort | Why later |
 | --- | --- | --- | --- |
-| Time-to-first-spike / latency coding variants | Not implemented as dedicated variants | Medium | Better after baseline heads are benchmarked |
 | Fully integrated WTA-driven foveation stack | Pieces exist, integrated stack does not | Medium | Better once stricter foveation exists |
 | Fully spiking collision/navigation multi-head family | Current multi-head is practical, not full family | Medium | Current implementation is enough for baselines |
 | Hard-gated mixture-of-experts family | Not implemented | Medium-High | Strong ternary upside, but routing complexity is high |
@@ -145,12 +145,11 @@ This table focuses on the remaining gaps and ranks them by implementation value 
 | Bio-detailed neurons, transformers, STDP-heavy models | Not implemented | High | Explicitly deprioritized by this roadmap |
 
 ### Recommended Order to Close Gaps
-1. Tiny spiking autoencoder.
-2. Population coding variant.
-3. Time-to-first-spike / latency-coded heads.
-4. Integrated WTA-driven foveation stack.
-5. Hard-gated mixture-of-experts.
-6. Delay-based, spherical-graph, and frequency-domain ideas only after the above.
+1. Integrated WTA-driven foveation stack.
+2. Hard-gated mixture-of-experts.
+3. Fully spiking collision/navigation multi-head family.
+4. Event-driven sparse foveated SNN as dedicated class.
+5. Delay-based, spherical-graph, and frequency-domain ideas only after the above.
 
 ## System Context
 Primary context:
