@@ -411,6 +411,77 @@ def test_event_driven_pooling_snn_forward_shape_and_pool_features():
     assert pooled_features.shape == (4, 2, cfg.channels * len(cfg.pool_modes))
 
 
+def test_integrated_wta_foveated_snn_forward_shape_and_gates():
+    cfg = fm.WTAFoveatedStackConfig(
+        input_hw=(8, 8),
+        input_channels=2,
+        fovea_hw=(4, 4),
+        channels_fovea=4,
+        channels_periphery=3,
+        output_dim=5,
+        router_patch=2,
+        kwta_k=2,
+    )
+
+    def forward(x):
+        model = fm.IntegratedWTAFoveatedSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["region_gate"], aux["channel_gate"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((4, 2, 8, 8, 2), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(35), x)
+    logits, spike_rate, region_gate, channel_gate = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (2,)
+    assert region_gate.shape == (16,)
+    assert channel_gate.shape == (cfg.channels_fovea,)
+
+
+def test_hard_gated_moe_snn_forward_shape_and_usage():
+    cfg = fm.HardGatedMoEConfig(input_dim=10, hidden_dim=8, output_dim=4, num_experts=3, top_k=1)
+
+    def forward(x):
+        model = fm.HardGatedMixtureOfExpertsSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["expert_usage"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((5, 2, cfg.input_dim), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(36), x)
+    logits, spike_rate, expert_usage = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (1,)
+    assert expert_usage.shape == (cfg.num_experts,)
+
+
+def test_spiking_collision_navigation_multihead_forward_shape():
+    cfg = fm.SpikingMultiHeadConfig(
+        input_dim=9,
+        hidden_dim=8,
+        collision_hidden=6,
+        navigation_hidden=7,
+        collision_dim=2,
+        navigation_dim=3,
+    )
+
+    def forward(x):
+        model = fm.SpikingCollisionNavigationMultiHead(cfg)
+        outputs, aux = model(x)
+        return outputs["collision"], outputs["navigation"], aux["spike_rate"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((5, 2, cfg.input_dim), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(37), x)
+    collision, navigation, spike_rate = transformed.apply(params, x)
+
+    assert collision.shape == (2, cfg.collision_dim)
+    assert navigation.shape == (2, cfg.navigation_dim)
+    assert spike_rate.shape == (3,)
+
+
 def test_tiny_spiking_autoencoder_forward_shape_and_aux():
     cfg = fm.TinySpikingAutoencoderConfig(input_dim=10, hidden_dim=8, latent_dim=4)
 

@@ -39,13 +39,16 @@ Status is tracked against reference implementations in [src/spyx/fpga_models.py]
 - [x] Motion-compensated input front-end -> `MotionCompensatedInputFrontEnd`
 - [x] Gaze-control policy head -> `GazeControlPolicyHead`
 - [x] Region-activation router -> `RegionActivationRouter`
+- [x] Integrated WTA-driven foveation stack -> `IntegratedWTAFoveatedSNN`
 - [x] Trajectory-conditioned encoder -> `TrajectoryConditionedSpikingEncoder`
 - [x] Predictive-coding block -> `PredictiveCodingSNNBlock`
 - [x] Collision + navigation multi-head -> `CollisionNavigationMultiHead`
+- [x] Fully spiking collision/navigation multi-head family -> `SpikingCollisionNavigationMultiHead`
 - [x] Hybrid SNN + classical filters pipeline -> `HybridClassicalFilterSNN`
 - [x] Tiny spiking autoencoder -> `TinySpikingAutoencoder`
 - [x] Population coding variant -> `PopulationCodedLIFMLP`
 - [x] Time-to-first-spike / latency-coded heads -> `LatencyCodedSpikingHead`
+- [x] Hard-gated mixture-of-experts family -> `HardGatedMixtureOfExpertsSNN`
 - [x] Structured-sparse spiking CNN -> `StructuredSparseSpikingCNN`
 - [x] Event-driven pooling variants -> `EventDrivenPoolingSNN`
 - [x] Early-exit/anytime inference head -> `EarlyExitAnytimeSNN`
@@ -82,12 +85,15 @@ These exist as concrete reference modules in `src/spyx/fpga_models.py` and are c
 | Stereo disparity / correlation family | `StereoDisparityCorrelationSNN` |
 | Motion-compensated input front-end | `MotionCompensatedInputFrontEnd` |
 | Region-activation router | `RegionActivationRouter` |
+| Integrated WTA-driven foveation stack | `IntegratedWTAFoveatedSNN` |
 | Trajectory-conditioned encoder | `TrajectoryConditionedSpikingEncoder` |
 | Predictive-coding block | `PredictiveCodingSNNBlock` |
+| Fully spiking collision/navigation multi-head family | `SpikingCollisionNavigationMultiHead` |
 | Hybrid SNN + classical filters pipeline | `HybridClassicalFilterSNN` |
 | Tiny spiking autoencoder | `TinySpikingAutoencoder` |
 | Population coding variant | `PopulationCodedLIFMLP` |
 | Time-to-first-spike / latency-coded heads | `LatencyCodedSpikingHead` |
+| Hard-gated mixture-of-experts family | `HardGatedMixtureOfExpertsSNN` |
 | Structured-sparse spiking CNN | `StructuredSparseSpikingCNN` |
 | Event-driven pooling variants | `EventDrivenPoolingSNN` |
 | Early-exit / anytime head | `EarlyExitAnytimeSNN` |
@@ -98,9 +104,7 @@ These are present in practical form, but not as literal one-to-one realizations 
 | Roadmap concept | Current state |
 | --- | --- |
 | Foveated dual-path / multi-scale SNN | Implemented as `FoveatedDualPathSNN` |
-| Collision-risk head + navigation-value head | Implemented as `CollisionNavigationMultiHead`, not a fully spiking integrated family |
 | Gaze-control policy head | Implemented as `GazeControlPolicyHead`, but not a full gaze-control SNN family |
-| WTA-driven foveation | Achievable by composing `KWTASaliencyGate`, `RegionActivationRouter`, and `FoveatedDualPathSNN` |
 | Time-surface + foveated SNN | Achievable by composing `TimeSurfaceEncoder` with `FoveatedDualPathSNN` |
 | Motion-compensated foveated SNN | Achievable by composing `MotionCompensatedInputFrontEnd` with foveated modules |
 | Event-driven sparse foveated SNN | Achievable by combining sparse conv and foveated modules, not a dedicated class |
@@ -117,7 +121,6 @@ These are described in the roadmap but do not yet have dedicated implementations
 | Delay-based SNN | Not implemented |
 | Spike-frequency coding family | Not implemented as dedicated variants |
 | Stereo foveated correlation family with disparity bins / left-right consistency | Partially implemented via `StereoDisparityCorrelationSNN`; not yet foveated |
-| Hard-gated mixture-of-experts family | Not implemented |
 | Frequency-domain or graph-based spherical models | Not implemented |
 
 ## Gap Priority
@@ -129,9 +132,6 @@ No remaining low-complexity gaps are queued here after the latest implementation
 ### Implement Later
 | Item | Current state in Spyx | Effort | Why later |
 | --- | --- | --- | --- |
-| Fully integrated WTA-driven foveation stack | Pieces exist, integrated stack does not | Medium | Better once stricter foveation exists |
-| Fully spiking collision/navigation multi-head family | Current multi-head is practical, not full family | Medium | Current implementation is enough for baselines |
-| Hard-gated mixture-of-experts family | Not implemented | Medium-High | Strong ternary upside, but routing complexity is high |
 | Event-driven sparse foveated SNN as dedicated class | Achievable by composition, not explicit | Medium | Better after strict foveation exists |
 
 ### Defer
@@ -145,11 +145,8 @@ No remaining low-complexity gaps are queued here after the latest implementation
 | Bio-detailed neurons, transformers, STDP-heavy models | Not implemented | High | Explicitly deprioritized by this roadmap |
 
 ### Recommended Order to Close Gaps
-1. Integrated WTA-driven foveation stack.
-2. Hard-gated mixture-of-experts.
-3. Fully spiking collision/navigation multi-head family.
-4. Event-driven sparse foveated SNN as dedicated class.
-5. Delay-based, spherical-graph, and frequency-domain ideas only after the above.
+1. Event-driven sparse foveated SNN as dedicated class.
+2. Delay-based, spherical-graph, and frequency-domain ideas only after the above.
 
 ## System Context
 Primary context:

@@ -728,6 +728,15 @@ def _normalize_unit_interval(x: jnp.ndarray) -> jnp.ndarray:
     return (x - x_min) / jnp.maximum(x_max - x_min, 1e-6)
 
 
+def _crop_window_batch(x: jnp.ndarray, start_y: jnp.ndarray, start_x: jnp.ndarray, window_hw: tuple[int, int]) -> jnp.ndarray:
+    crop_h, crop_w = window_hw
+
+    def crop_one(img: jnp.ndarray, y0: jnp.ndarray, x0: jnp.ndarray) -> jnp.ndarray:
+        return jax.lax.dynamic_slice(img, (y0, x0, 0), (crop_h, crop_w, img.shape[-1]))
+
+    return jax.vmap(crop_one)(x, start_y, start_x)
+
+
 class LogPolarFoveatedConvSNN(hk.Module):
     """Log-polar foveated convolutional SNN with an explicit geometric front-end."""
 
@@ -813,6 +822,84 @@ class FoveatedDualPathSNN(hk.Module):
 
         _, (logits_seq, spike_rate_seq) = hk.scan(step, (sf, sp), x_seq)
         return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "spike_rate": jnp.mean(spike_rate_seq, axis=0)}
+
+
+@dataclass
+class WTAFoveatedStackConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    fovea_hw: tuple[int, int]
+    channels_fovea: int
+    channels_periphery: int
+    output_dim: int
+    router_patch: int = 4
+    router_top_k: int = 1
+    kwta_k: int = 4
+    tau: float = 4.0
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class IntegratedWTAFoveatedSNN(hk.Module):
+    """Integrated time-surface, routing, WTA, and foveated dual-path stack."""
+
+    def __init__(self, cfg: WTAFoveatedStackConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.time_surface = TimeSurfaceEncoder(tau=cfg.tau)
+        self.router = RegionActivationRouter(top_k=cfg.router_top_k, patch=cfg.router_patch)
+        self.saliency = KWTASaliencyGate(k=cfg.kwta_k)
+        self.fovea_conv = hk.Conv2D(cfg.channels_fovea, kernel_shape=3, padding="SAME")
+        self.periph_conv = hk.Conv2D(cfg.channels_periphery, kernel_shape=3, padding="SAME")
+        fh, fw = cfg.fovea_hw
+        h, w = cfg.input_hw
+        self.fovea_lif = snn.LIF((fh, fw, cfg.channels_fovea), beta=cfg.beta, threshold=cfg.threshold)
+        self.periph_lif = snn.LIF((h // 2, w // 2, cfg.channels_periphery), beta=cfg.beta, threshold=cfg.threshold)
+        self.route_proj = hk.Linear(cfg.output_dim)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def _crop_fovea_from_scores(self, x: jnp.ndarray, scores: jnp.ndarray) -> jnp.ndarray:
+        batch, height, width, _ = x.shape
+        patch = self.cfg.router_patch
+        fh, fw = self.cfg.fovea_hw
+        pw = max(width // patch, 1)
+        best_idx = jnp.argmax(scores, axis=-1)
+        center_y = (best_idx // pw) * patch + patch // 2
+        center_x = (best_idx % pw) * patch + patch // 2
+        start_y = jnp.clip(center_y - fh // 2, 0, height - fh)
+        start_x = jnp.clip(center_x - fw // 2, 0, width - fw)
+        return _crop_window_batch(x, start_y, start_x, self.cfg.fovea_hw)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        x_ts = self.time_surface(x_seq)
+        _, batch, _, _, _ = x_ts.shape
+        sf = self.fovea_lif.initial_state(batch)
+        sp = self.periph_lif.initial_state(batch)
+
+        def step(carry, x_t):
+            c_f, c_p = carry
+            scores, region_gate = self.router(x_t)
+            fovea = self._crop_fovea_from_scores(x_t, scores)
+            fovea_feat = self.fovea_conv(fovea)
+            fovea_feat, channel_gate = self.saliency(fovea_feat)
+            periph = jax.image.resize(x_t, (x_t.shape[0], x_t.shape[1] // 2, x_t.shape[2] // 2, x_t.shape[3]), method="linear")
+            s_f, c_f = self.fovea_lif(fovea_feat, c_f)
+            s_p, c_p = self.periph_lif(self.periph_conv(periph), c_p)
+            fused = jnp.concatenate([jnp.mean(s_f, axis=(1, 2)), jnp.mean(s_p, axis=(1, 2))], axis=-1)
+            logits_t = self.head(fused) + self.route_proj(scores)
+            route_stats = jnp.mean(region_gate, axis=0)
+            channel_stats = jnp.mean(channel_gate, axis=0)
+            sr_t = jnp.stack([jnp.mean(s_f), jnp.mean(s_p)])
+            return (c_f, c_p), (logits_t, sr_t, route_stats, channel_stats)
+
+        _, (logits_seq, sr_seq, route_seq, channel_seq) = hk.scan(step, (sf, sp), x_ts)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.mean(sr_seq, axis=0),
+            "region_gate": jnp.mean(route_seq, axis=0),
+            "channel_gate": jnp.mean(channel_seq, axis=0),
+        }
 
 
 @dataclass
@@ -1263,6 +1350,61 @@ class CollisionNavigationMultiHead(hk.Module):
 
 
 @dataclass
+class SpikingMultiHeadConfig:
+    input_dim: int
+    hidden_dim: int
+    collision_hidden: int
+    navigation_hidden: int
+    collision_dim: int
+    navigation_dim: int
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class SpikingCollisionNavigationMultiHead(hk.Module):
+    """Fully spiking shared trunk with separate spiking collision and navigation heads."""
+
+    def __init__(self, cfg: SpikingMultiHeadConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.shared_proj = hk.Linear(cfg.hidden_dim)
+        self.shared_lif = snn.LIF((cfg.hidden_dim,), beta=cfg.beta, threshold=cfg.threshold)
+        self.collision_proj = hk.Linear(cfg.collision_hidden)
+        self.navigation_proj = hk.Linear(cfg.navigation_hidden)
+        self.collision_lif = snn.LIF((cfg.collision_hidden,), beta=cfg.beta, threshold=cfg.threshold)
+        self.navigation_lif = snn.LIF((cfg.navigation_hidden,), beta=cfg.beta, threshold=cfg.threshold)
+        self.collision_head = hk.Linear(cfg.collision_dim)
+        self.navigation_head = hk.Linear(cfg.navigation_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _ = x_seq.shape
+        shared_state = self.shared_lif.initial_state(batch)
+        collision_state = self.collision_lif.initial_state(batch)
+        navigation_state = self.navigation_lif.initial_state(batch)
+
+        def step(carry, x_t):
+            c_shared, c_collision, c_navigation = carry
+            s_shared, c_shared = self.shared_lif(self.shared_proj(x_t), c_shared)
+            s_collision, c_collision = self.collision_lif(self.collision_proj(s_shared), c_collision)
+            s_navigation, c_navigation = self.navigation_lif(self.navigation_proj(s_shared), c_navigation)
+            coll_t = self.collision_head(s_collision)
+            nav_t = self.navigation_head(s_navigation)
+            sr_t = jnp.stack([jnp.mean(s_shared), jnp.mean(s_collision), jnp.mean(s_navigation)])
+            return (c_shared, c_collision, c_navigation), (coll_t, nav_t, sr_t)
+
+        _, (collision_seq, navigation_seq, sr_seq) = hk.scan(step, (shared_state, collision_state, navigation_state), x_seq)
+        return {
+            "collision": _readout(collision_seq, self.cfg.readout),
+            "navigation": _readout(navigation_seq, self.cfg.readout),
+        }, {
+            "collision_seq": collision_seq,
+            "navigation_seq": navigation_seq,
+            "spike_rate": jnp.mean(sr_seq, axis=0),
+        }
+
+
+@dataclass
 class StructuredSparseConvConfig:
     input_hw: tuple[int, int]
     input_channels: int
@@ -1473,6 +1615,56 @@ class PopulationCodedLIFMLP(hk.Module):
             "logits_seq": logits_seq,
             "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
             "population_activity": jnp.asarray([jnp.mean(code_seq)]),
+        }
+
+
+@dataclass
+class HardGatedMoEConfig:
+    input_dim: int
+    hidden_dim: int
+    output_dim: int
+    num_experts: int
+    top_k: int = 1
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class HardGatedMixtureOfExpertsSNN(hk.Module):
+    """Hard top-k gated spiking mixture-of-experts block."""
+
+    def __init__(self, cfg: HardGatedMoEConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.gate_proj = hk.Linear(cfg.num_experts)
+        self.expert_proj = [hk.Linear(cfg.hidden_dim, name=f"expert_proj_{idx}") for idx in range(cfg.num_experts)]
+        self.expert_lif = [snn.LIF((cfg.hidden_dim,), beta=cfg.beta, threshold=cfg.threshold) for _ in range(cfg.num_experts)]
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _ = x_seq.shape
+        expert_states = tuple(expert.initial_state(batch) for expert in self.expert_lif)
+
+        def step(carry, x_t):
+            gate_scores = self.gate_proj(x_t)
+            gate = _topk_mask(gate_scores, self.cfg.top_k)
+            gate = gate / jnp.maximum(jnp.sum(gate, axis=-1, keepdims=True), 1.0)
+            next_states = []
+            expert_outs = []
+            for state, proj, expert in zip(carry, self.expert_proj, self.expert_lif, strict=False):
+                s_t, next_state = expert(proj(x_t), state)
+                next_states.append(next_state)
+                expert_outs.append(s_t)
+            expert_stack = jnp.stack(expert_outs, axis=1)
+            fused = jnp.sum(expert_stack * gate[:, :, None], axis=1)
+            logits_t = self.head(fused)
+            return tuple(next_states), (logits_t, jnp.mean(expert_stack), jnp.mean(gate, axis=0))
+
+        _, (logits_seq, sr_seq, gate_seq) = hk.scan(step, expert_states, x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
+            "expert_usage": jnp.mean(gate_seq, axis=0),
         }
 
 
