@@ -13,3 +13,6 @@ This page provides documentation for the core Spyx modules.
 
 ## Data Utilities
 ::: spyx.data
+
+## Model Templates
+::: spyx.models

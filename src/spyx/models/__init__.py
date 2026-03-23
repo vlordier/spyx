@@ -5,9 +5,9 @@ This module re-exports reference model templates from focused implementation mod
 
 from __future__ import annotations
 
-from .. import fpga_models_core as _core
-from .. import fpga_models_fusion as _fusion
-from .. import fpga_models_vision as _vision
+from . import core as _core
+from . import fusion as _fusion
+from . import vision as _vision
 
 __all__: list[str] = []
 

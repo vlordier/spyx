@@ -131,7 +131,7 @@ If you find Spyx useful in your work please cite it using the following Bibtex e
 FPGA-Friendly Model Templates
 ============================
 
-Spyx now includes model templates in src/spyx/models/__init__.py (legacy alias: src/spyx/fpga_models.py):
+Spyx now includes model templates in src/spyx/models/ (canonical barrel: src/spyx/models/__init__.py; legacy alias: src/spyx/fpga_models.py):
 
 - LIFMLP
 - ConvLIFSNN

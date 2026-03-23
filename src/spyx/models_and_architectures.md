@@ -11,7 +11,7 @@ It merges all prior notes into one consistent reference, preserving the original
 - This file is the canonical architecture roadmap to avoid divergence between duplicate documents.
 
 ## Implementation Checklist (Spyx)
-Status is tracked against reference implementations in [src/spyx/models/__init__.py](src/spyx/models/__init__.py) with a legacy alias at [src/spyx/fpga_models.py](src/spyx/fpga_models.py).
+Status is tracked against reference implementations in [src/spyx/models/](src/spyx/models/) (barrel: [src/spyx/models/__init__.py](src/spyx/models/__init__.py)) with a legacy alias at [src/spyx/fpga_models.py](src/spyx/fpga_models.py).
 
 ### Core top-10 families
 - [x] Plain feedforward LIF MLP -> `LIFMLP`
@@ -70,7 +70,7 @@ Status is tracked against reference implementations in [src/spyx/models/__init__
 This section distinguishes between items that are implemented literally, items that are represented by practical approximations or compositions, and items that remain conceptual only.
 
 ### Implemented Exactly
-These exist as concrete reference modules in `src/spyx/models/__init__.py` (legacy alias: `src/spyx/fpga_models.py`) and are covered by `tests/test_fpga_models.py`.
+These exist as concrete reference modules in `src/spyx/models/` (legacy alias: `src/spyx/fpga_models.py`) and are covered by `tests/test_fpga_models.py`.
 
 | Roadmap item | Spyx implementation |
 | --- | --- |
