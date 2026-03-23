@@ -127,3 +127,15 @@ If you find Spyx useful in your work please cite it using the following Bibtex e
   url          = {https://doi.org/10.5281/zenodo.10635178}
 }
 ```
+
+FPGA-Friendly Model Templates
+============================
+
+Spyx now includes hardware-first templates in src/spyx/fpga_models.py:
+
+- LIFMLP
+- ConvLIFSNN
+- TernaryLIFMLP
+- TernaryConvLIFSNN
+
+These templates are intended as starting points for fixed-point, low-bit, and RTL-oriented workflows.

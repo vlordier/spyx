@@ -12,4 +12,5 @@ from . import fn
 from . import data
 from . import experimental
 from . import loaders
+from . import fpga_models
 from . import quantized
