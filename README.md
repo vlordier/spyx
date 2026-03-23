@@ -131,7 +131,7 @@ If you find Spyx useful in your work please cite it using the following Bibtex e
 FPGA-Friendly Model Templates
 ============================
 
-Spyx now includes hardware-first templates in src/spyx/fpga_models.py:
+Spyx now includes model templates in src/spyx/models/__init__.py (legacy alias: src/spyx/fpga_models.py):
 
 - LIFMLP
 - ConvLIFSNN
@@ -147,7 +147,7 @@ Benchmark hooks:
 - count_parameters
 - benchmark_forward
 
-- Third wave (residual/multi-timescale/recurrent/hybrid) templates now implemented in `src/spyx/fpga_models.py`:
+- Third wave (residual/multi-timescale/recurrent/hybrid) templates now implemented in `src/spyx/models/__init__.py`:
   - `ResidualShallowSpikingCNN` (`ResidualConvConfig`)
   - `MultiTimescaleLIFBlock` (`MultiTimescaleConfig`)
   - `TinyRecurrentSpikingBlock` (`RecurrentBlockConfig`)

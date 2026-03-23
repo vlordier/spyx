@@ -2,7 +2,7 @@ import haiku as hk
 import jax
 import jax.numpy as jnp
 
-from spyx import fpga_models as fm
+import spyx.models as fm
 
 
 def test_lif_mlp_forward_shape():
