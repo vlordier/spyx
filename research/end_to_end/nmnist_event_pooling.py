@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "src"))
 
 import spyx.loaders as loaders
 import spyx.models as fm
 
-from common import build_dataset, run_classification_experiment
+from .common import build_dataset, run_classification_experiment
 
 
 def parse_args() -> argparse.Namespace:

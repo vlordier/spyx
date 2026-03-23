@@ -10,15 +10,20 @@ These small research scripts run recent Spyx reference models on real Tonic-back
 
 ## Requirements
 
-- Install loader dependencies: `pip install spyx[loaders]`
-- Run from the repository root so `research.end_to_end` is importable.
+- Install the project in editable mode with loader extras: `pip install -e .[loaders]`
+
+The experiments are packaged via `pyproject.toml`, so they can be run either as modules or as console scripts after installation.
 
 ## Example commands
 
 ```bash
-python research/end_to_end/nmnist_logpolar.py --epochs 3 --train-limit 1024 --eval-limit 256
-python research/end_to_end/nmnist_event_pooling.py --epochs 3 --train-limit 1024 --eval-limit 256
-python research/end_to_end/shd_tiny_transformer.py --epochs 3 --channels 72 --sample-t 64 --train-limit 2048 --eval-limit 512
+python -m research.end_to_end.nmnist_logpolar --epochs 3 --train-limit 1024 --eval-limit 256
+python -m research.end_to_end.nmnist_event_pooling --epochs 3 --train-limit 1024 --eval-limit 256
+python -m research.end_to_end.shd_tiny_transformer --epochs 3 --channels 72 --sample-t 64 --train-limit 2048 --eval-limit 512
+
+spyx-exp-nmnist-logpolar --epochs 3 --train-limit 1024 --eval-limit 256
+spyx-exp-nmnist-event-pooling --epochs 3 --train-limit 1024 --eval-limit 256
+spyx-exp-shd-tiny-transformer --epochs 3 --channels 72 --sample-t 64 --train-limit 2048 --eval-limit 512
 ```
 
 The defaults are intentionally small so they serve as quick end-to-end sanity runs rather than full benchmark recipes.
