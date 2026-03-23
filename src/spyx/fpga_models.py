@@ -201,3 +201,169 @@ class TernaryConvLIFSNN(hk.Module):
 
         _, (logits_seq, spike_rate_seq) = hk.scan(step, (v1, v2), x_seq)
         return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "spike_rate": jnp.mean(spike_rate_seq, axis=0)}
+
+
+@dataclass
+class SparseConvConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    channels1: int
+    channels2: int
+    output_dim: int
+    kernel_size: int = 3
+    beta: float = 0.9
+    threshold: float = 1.0
+    event_threshold: float = 0.0
+    padding: str = "SAME"
+    readout: str = "mean"
+
+
+@dataclass
+class DepthwiseSepConvConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    depth_multiplier1: int
+    pointwise1: int
+    depth_multiplier2: int
+    pointwise2: int
+    output_dim: int
+    kernel_size: int = 3
+    beta: float = 0.9
+    threshold: float = 1.0
+    padding: str = "SAME"
+    readout: str = "mean"
+
+
+class DepthwiseConv2D(hk.Module):
+    """Depthwise convolution with NHWC input."""
+
+    def __init__(
+        self,
+        kernel_size: int = 3,
+        depth_multiplier: int = 1,
+        stride: int = 1,
+        padding: str = "SAME",
+        with_bias: bool = True,
+        name: str | None = None,
+    ):
+        super().__init__(name=name)
+        self.kernel_size = kernel_size
+        self.depth_multiplier = depth_multiplier
+        self.stride = stride
+        self.padding = padding
+        self.with_bias = with_bias
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        in_ch = x.shape[-1]
+        w = hk.get_parameter(
+            "w",
+            (self.kernel_size, self.kernel_size, 1, in_ch * self.depth_multiplier),
+            init=hk.initializers.VarianceScaling(1.0, "fan_avg", "uniform"),
+        )
+        y = jax.lax.conv_general_dilated(
+            x,
+            w,
+            window_strides=(self.stride, self.stride),
+            padding=self.padding,
+            feature_group_count=in_ch,
+            dimension_numbers=("NHWC", "HWIO", "NHWC"),
+        )
+        if self.with_bias:
+            b = hk.get_parameter("b", (in_ch * self.depth_multiplier,), init=jnp.zeros)
+            y = y + b
+        return y
+
+
+class SparseEventConvLIFSNN(hk.Module):
+    """Sparse event-driven convolutional LIF SNN with activity masking."""
+
+    def __init__(self, cfg: SparseConvConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.conv1 = hk.Conv2D(cfg.channels1, kernel_shape=cfg.kernel_size, stride=1, padding=cfg.padding)
+        self.conv2 = hk.Conv2D(cfg.channels2, kernel_shape=cfg.kernel_size, stride=1, padding=cfg.padding)
+        h, w = cfg.input_hw
+        self.lif1 = snn.LIF((h, w, cfg.channels1), beta=cfg.beta, threshold=cfg.threshold)
+        self.lif2 = snn.LIF((h, w, cfg.channels2), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        v1 = self.lif1.initial_state(batch)
+        v2 = self.lif2.initial_state(batch)
+
+        def step(carry, x_t):
+            c1, c2 = carry
+            event_mask = (jnp.abs(x_t) > self.cfg.event_threshold).astype(x_t.dtype)
+            x_sparse = x_t * event_mask
+            s1, c1 = self.lif1(self.conv1(x_sparse), c1)
+            s2, c2 = self.lif2(self.conv2(s1), c2)
+            y_t = self.head(jnp.mean(s2, axis=(1, 2)))
+            sr = jnp.stack([jnp.mean(s1), jnp.mean(s2)])
+            active_ratio = jnp.mean(event_mask)
+            return (c1, c2), (y_t, sr, active_ratio)
+
+        _, (logits_seq, spike_rate_seq, active_ratio_seq) = hk.scan(step, (v1, v2), x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.mean(spike_rate_seq, axis=0),
+            "active_ratio": jnp.mean(active_ratio_seq),
+        }
+
+
+class DepthwiseSeparableConvLIFSNN(hk.Module):
+    """Depthwise-separable convolutional LIF SNN."""
+
+    def __init__(self, cfg: DepthwiseSepConvConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.dw1 = DepthwiseConv2D(kernel_size=cfg.kernel_size, depth_multiplier=cfg.depth_multiplier1, padding=cfg.padding)
+        self.pw1 = hk.Conv2D(cfg.pointwise1, kernel_shape=1, stride=1, padding=cfg.padding)
+        self.dw2 = DepthwiseConv2D(kernel_size=cfg.kernel_size, depth_multiplier=cfg.depth_multiplier2, padding=cfg.padding)
+        self.pw2 = hk.Conv2D(cfg.pointwise2, kernel_shape=1, stride=1, padding=cfg.padding)
+        h, w = cfg.input_hw
+        self.lif1 = snn.LIF((h, w, cfg.pointwise1), beta=cfg.beta, threshold=cfg.threshold)
+        self.lif2 = snn.LIF((h, w, cfg.pointwise2), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        v1 = self.lif1.initial_state(batch)
+        v2 = self.lif2.initial_state(batch)
+
+        def step(carry, x_t):
+            c1, c2 = carry
+            z1 = self.pw1(self.dw1(x_t))
+            s1, c1 = self.lif1(z1, c1)
+            z2 = self.pw2(self.dw2(s1))
+            s2, c2 = self.lif2(z2, c2)
+            y_t = self.head(jnp.mean(s2, axis=(1, 2)))
+            sr = jnp.stack([jnp.mean(s1), jnp.mean(s2)])
+            return (c1, c2), (y_t, sr)
+
+        _, (logits_seq, spike_rate_seq) = hk.scan(step, (v1, v2), x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.mean(spike_rate_seq, axis=0),
+        }
+
+
+def count_parameters(params: hk.Params) -> int:
+    leaves = jax.tree_util.tree_leaves(params)
+    return int(sum(leaf.size for leaf in leaves))
+
+
+def benchmark_forward(forward_fn, sample_input: jnp.ndarray, seed: int = 0) -> dict[str, object]:
+    transformed = hk.without_apply_rng(hk.transform(forward_fn))
+    params = transformed.init(jax.random.PRNGKey(seed), sample_input)
+    logits, aux = transformed.apply(params, sample_input)
+    summary = {
+        "params": count_parameters(params),
+        "logits_shape": tuple(logits.shape),
+    }
+    if isinstance(aux, dict):
+        if "spike_rate" in aux:
+            summary["spike_rate"] = jnp.asarray(aux["spike_rate"])
+        if "active_ratio" in aux:
+            summary["active_ratio"] = float(jnp.asarray(aux["active_ratio"]))
+    return summary

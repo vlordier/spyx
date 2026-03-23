@@ -139,3 +139,10 @@ Spyx now includes hardware-first templates in src/spyx/fpga_models.py:
 - TernaryConvLIFSNN
 
 These templates are intended as starting points for fixed-point, low-bit, and RTL-oriented workflows.
+
+- SparseEventConvLIFSNN
+- DepthwiseSeparableConvLIFSNN
+
+Benchmark hooks:
+- count_parameters
+- benchmark_forward

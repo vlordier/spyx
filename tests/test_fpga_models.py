@@ -71,3 +71,68 @@ def test_ternary_conv_lif_snn_forward_shape():
 
     assert logits.shape == (2, cfg.output_dim)
     assert spike_rate.shape == (2,)
+
+
+def test_sparse_event_conv_lif_snn_forward_shape_and_activity():
+    cfg = fm.SparseConvConfig(
+        input_hw=(8, 8),
+        input_channels=2,
+        channels1=4,
+        channels2=6,
+        output_dim=5,
+        event_threshold=0.5,
+    )
+
+    def forward(x):
+        model = fm.SparseEventConvLIFSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["active_ratio"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((4, 2, 8, 8, 2), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(4), x)
+    logits, spike_rate, active_ratio = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (2,)
+    assert jnp.asarray(active_ratio).shape == ()
+
+
+def test_depthwise_separable_conv_lif_snn_forward_shape():
+    cfg = fm.DepthwiseSepConvConfig(
+        input_hw=(8, 8),
+        input_channels=2,
+        depth_multiplier1=2,
+        pointwise1=8,
+        depth_multiplier2=1,
+        pointwise2=6,
+        output_dim=5,
+    )
+
+    def forward(x):
+        model = fm.DepthwiseSeparableConvLIFSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((4, 2, 8, 8, 2), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(5), x)
+    logits, spike_rate = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (2,)
+
+
+def test_benchmark_forward_returns_summary():
+    cfg = fm.MLPConfig(input_dim=12, hidden1=8, hidden2=6, output_dim=3)
+
+    def forward(x):
+        model = fm.LIFMLP(cfg)
+        return model(x)
+
+    x = jnp.ones((4, 2, cfg.input_dim), dtype=jnp.float32)
+    summary = fm.benchmark_forward(forward, x, seed=7)
+
+    assert summary["params"] > 0
+    assert summary["logits_shape"] == (2, cfg.output_dim)
+    assert "spike_rate" in summary
