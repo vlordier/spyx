@@ -50,3 +50,7 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/spyx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
