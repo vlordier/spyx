@@ -40,6 +40,7 @@ Status is tracked against reference implementations in [src/spyx/fpga_models.py]
 - [x] Gaze-control policy head -> `GazeControlPolicyHead`
 - [x] Region-activation router -> `RegionActivationRouter`
 - [x] Integrated WTA-driven foveation stack -> `IntegratedWTAFoveatedSNN`
+- [x] Event-driven sparse foveated SNN -> `EventDrivenSparseFoveatedSNN`
 - [x] Trajectory-conditioned encoder -> `TrajectoryConditionedSpikingEncoder`
 - [x] Predictive-coding block -> `PredictiveCodingSNNBlock`
 - [x] Collision + navigation multi-head -> `CollisionNavigationMultiHead`
@@ -107,7 +108,6 @@ These are present in practical form, but not as literal one-to-one realizations 
 | Gaze-control policy head | Implemented as `GazeControlPolicyHead`, but not a full gaze-control SNN family |
 | Time-surface + foveated SNN | Achievable by composing `TimeSurfaceEncoder` with `FoveatedDualPathSNN` |
 | Motion-compensated foveated SNN | Achievable by composing `MotionCompensatedInputFrontEnd` with foveated modules |
-| Event-driven sparse foveated SNN | Achievable by combining sparse conv and foveated modules, not a dedicated class |
 | Ternary saliency-router stack | Represented by ternary, sparse, gating, and routing pieces rather than one named stack |
 
 ### Still Conceptual Only
@@ -132,7 +132,7 @@ No remaining low-complexity gaps are queued here after the latest implementation
 ### Implement Later
 | Item | Current state in Spyx | Effort | Why later |
 | --- | --- | --- | --- |
-| Event-driven sparse foveated SNN as dedicated class | Achievable by composition, not explicit | Medium | Better after strict foveation exists |
+No medium-priority practical gaps remain; only deferred research-heavy families are left.
 
 ### Defer
 | Item | Current state in Spyx | Effort | Why defer |
@@ -145,8 +145,7 @@ No remaining low-complexity gaps are queued here after the latest implementation
 | Bio-detailed neurons, transformers, STDP-heavy models | Not implemented | High | Explicitly deprioritized by this roadmap |
 
 ### Recommended Order to Close Gaps
-1. Event-driven sparse foveated SNN as dedicated class.
-2. Delay-based, spherical-graph, and frequency-domain ideas only after the above.
+1. Delay-based, spherical-graph, and frequency-domain ideas only after core deployment milestones.
 
 ## System Context
 Primary context:

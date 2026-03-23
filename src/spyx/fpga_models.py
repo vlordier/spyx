@@ -903,6 +903,86 @@ class IntegratedWTAFoveatedSNN(hk.Module):
 
 
 @dataclass
+class EventDrivenSparseFoveatedConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    fovea_hw: tuple[int, int]
+    channels_fovea: int
+    channels_periphery: int
+    output_dim: int
+    event_threshold: float = 0.0
+    sparsity: float = 0.5
+    router_patch: int = 4
+    router_top_k: int = 1
+    kwta_k: int = 4
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class EventDrivenSparseFoveatedSNN(hk.Module):
+    """Dedicated event-driven sparse foveated SNN with dynamic route selection."""
+
+    def __init__(self, cfg: EventDrivenSparseFoveatedConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.router = RegionActivationRouter(top_k=cfg.router_top_k, patch=cfg.router_patch)
+        self.saliency = KWTASaliencyGate(k=cfg.kwta_k)
+        self.fovea_conv = StructuredSparseConv2D(cfg.channels_fovea, kernel_size=3, sparsity=cfg.sparsity, padding="SAME")
+        self.periph_conv = StructuredSparseConv2D(cfg.channels_periphery, kernel_size=3, sparsity=cfg.sparsity, padding="SAME")
+        fh, fw = cfg.fovea_hw
+        h, w = cfg.input_hw
+        self.fovea_lif = snn.LIF((fh, fw, cfg.channels_fovea), beta=cfg.beta, threshold=cfg.threshold)
+        self.periph_lif = snn.LIF((h // 2, w // 2, cfg.channels_periphery), beta=cfg.beta, threshold=cfg.threshold)
+        self.route_proj = hk.Linear(cfg.output_dim)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def _crop_fovea_from_scores(self, x: jnp.ndarray, scores: jnp.ndarray) -> jnp.ndarray:
+        _, height, width, _ = x.shape
+        patch = self.cfg.router_patch
+        fh, fw = self.cfg.fovea_hw
+        pw = max(width // patch, 1)
+        best_idx = jnp.argmax(scores, axis=-1)
+        center_y = (best_idx // pw) * patch + patch // 2
+        center_x = (best_idx % pw) * patch + patch // 2
+        start_y = jnp.clip(center_y - fh // 2, 0, height - fh)
+        start_x = jnp.clip(center_x - fw // 2, 0, width - fw)
+        return _crop_window_batch(x, start_y, start_x, self.cfg.fovea_hw)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        sf = self.fovea_lif.initial_state(batch)
+        sp = self.periph_lif.initial_state(batch)
+
+        def step(carry, x_t):
+            c_f, c_p = carry
+            event_mask = (jnp.abs(x_t) > self.cfg.event_threshold).astype(x_t.dtype)
+            x_sparse = x_t * event_mask
+            scores, region_gate = self.router(x_sparse)
+            fovea = self._crop_fovea_from_scores(x_sparse, scores)
+            fovea_feat, channel_gate = self.saliency(self.fovea_conv(fovea))
+            periph = jax.image.resize(x_sparse, (x_sparse.shape[0], x_sparse.shape[1] // 2, x_sparse.shape[2] // 2, x_sparse.shape[3]), method="linear")
+            s_f, c_f = self.fovea_lif(fovea_feat, c_f)
+            s_p, c_p = self.periph_lif(self.periph_conv(periph), c_p)
+            fused = jnp.concatenate([jnp.mean(s_f, axis=(1, 2)), jnp.mean(s_p, axis=(1, 2))], axis=-1)
+            logits_t = self.head(fused) + self.route_proj(scores)
+            sr_t = jnp.stack([jnp.mean(s_f), jnp.mean(s_p)])
+            active_ratio = jnp.mean(event_mask)
+            route_stats = jnp.mean(region_gate, axis=0)
+            channel_stats = jnp.mean(channel_gate, axis=0)
+            return (c_f, c_p), (logits_t, sr_t, active_ratio, route_stats, channel_stats)
+
+        _, (logits_seq, sr_seq, active_seq, route_seq, channel_seq) = hk.scan(step, (sf, sp), x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.mean(sr_seq, axis=0),
+            "active_ratio": jnp.mean(active_seq),
+            "region_gate": jnp.mean(route_seq, axis=0),
+            "channel_gate": jnp.mean(channel_seq, axis=0),
+        }
+
+
+@dataclass
 class IMUConditionedConfig:
     vision_cfg: ConvConfig
     imu_dim: int

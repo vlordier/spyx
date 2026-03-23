@@ -482,6 +482,36 @@ def test_spiking_collision_navigation_multihead_forward_shape():
     assert spike_rate.shape == (3,)
 
 
+def test_event_driven_sparse_foveated_snn_forward_shape_and_sparse_aux():
+    cfg = fm.EventDrivenSparseFoveatedConfig(
+        input_hw=(8, 8),
+        input_channels=2,
+        fovea_hw=(4, 4),
+        channels_fovea=4,
+        channels_periphery=3,
+        output_dim=5,
+        event_threshold=0.2,
+        router_patch=2,
+        kwta_k=2,
+    )
+
+    def forward(x):
+        model = fm.EventDrivenSparseFoveatedSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["active_ratio"], aux["region_gate"], aux["channel_gate"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((4, 2, 8, 8, 2), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(38), x)
+    logits, spike_rate, active_ratio, region_gate, channel_gate = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (2,)
+    assert jnp.asarray(active_ratio).shape == ()
+    assert region_gate.shape == (16,)
+    assert channel_gate.shape == (cfg.channels_fovea,)
+
+
 def test_tiny_spiking_autoencoder_forward_shape_and_aux():
     cfg = fm.TinySpikingAutoencoderConfig(input_dim=10, hidden_dim=8, latent_dim=4)
 
