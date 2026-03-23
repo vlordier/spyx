@@ -146,3 +146,9 @@ These templates are intended as starting points for fixed-point, low-bit, and RT
 Benchmark hooks:
 - count_parameters
 - benchmark_forward
+
+- Third wave (residual/multi-timescale/recurrent/hybrid) templates now implemented in `src/spyx/fpga_models.py`:
+  - `ResidualShallowSpikingCNN` (`ResidualConvConfig`)
+  - `MultiTimescaleLIFBlock` (`MultiTimescaleConfig`)
+  - `TinyRecurrentSpikingBlock` (`RecurrentBlockConfig`)
+  - `HybridSNNEncoderHead` (`HybridEncoderConfig`)

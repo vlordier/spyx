@@ -367,3 +367,192 @@ def benchmark_forward(forward_fn, sample_input: jnp.ndarray, seed: int = 0) -> d
         if "active_ratio" in aux:
             summary["active_ratio"] = float(jnp.asarray(aux["active_ratio"]))
     return summary
+
+
+@dataclass
+class ResidualConvConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    stem_channels: int
+    block_channels: int
+    output_dim: int
+    kernel_size: int = 3
+    beta: float = 0.9
+    threshold: float = 1.0
+    padding: str = "SAME"
+    readout: str = "mean"
+
+
+@dataclass
+class MultiTimescaleConfig:
+    input_dim: int
+    hidden_dim: int
+    output_dim: int
+    beta_fast: float = 0.6
+    beta_mid: float = 0.8
+    beta_slow: float = 0.95
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+@dataclass
+class RecurrentBlockConfig:
+    input_dim: int
+    hidden_dim: int
+    output_dim: int
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+@dataclass
+class HybridEncoderConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    channels1: int
+    channels2: int
+    head_hidden: int
+    output_dim: int
+    kernel_size: int = 3
+    beta: float = 0.9
+    threshold: float = 1.0
+    padding: str = "SAME"
+    readout: str = "mean"
+
+
+class ResidualShallowSpikingCNN(hk.Module):
+    def __init__(self, cfg: ResidualConvConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        k = cfg.kernel_size
+        h, w = cfg.input_hw
+        self.stem = hk.Conv2D(cfg.stem_channels, kernel_shape=k, stride=1, padding=cfg.padding)
+        self.to_block = hk.Conv2D(cfg.block_channels, kernel_shape=1, stride=1, padding=cfg.padding)
+        self.b1_c1 = hk.Conv2D(cfg.block_channels, kernel_shape=k, stride=1, padding=cfg.padding)
+        self.b1_c2 = hk.Conv2D(cfg.block_channels, kernel_shape=k, stride=1, padding=cfg.padding)
+        self.b2_c1 = hk.Conv2D(cfg.block_channels, kernel_shape=k, stride=1, padding=cfg.padding)
+        self.b2_c2 = hk.Conv2D(cfg.block_channels, kernel_shape=k, stride=1, padding=cfg.padding)
+        self.lif_stem = snn.LIF((h, w, cfg.stem_channels), beta=cfg.beta, threshold=cfg.threshold)
+        self.lif_b1_1 = snn.LIF((h, w, cfg.block_channels), beta=cfg.beta, threshold=cfg.threshold)
+        self.lif_b1_2 = snn.LIF((h, w, cfg.block_channels), beta=cfg.beta, threshold=cfg.threshold)
+        self.lif_b2_1 = snn.LIF((h, w, cfg.block_channels), beta=cfg.beta, threshold=cfg.threshold)
+        self.lif_b2_2 = snn.LIF((h, w, cfg.block_channels), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        states = (
+            self.lif_stem.initial_state(batch),
+            self.lif_b1_1.initial_state(batch),
+            self.lif_b1_2.initial_state(batch),
+            self.lif_b2_1.initial_state(batch),
+            self.lif_b2_2.initial_state(batch),
+        )
+
+        def step(carry, x_t):
+            s_stem, s11, s12, s21, s22 = carry
+            x0, s_stem = self.lif_stem(self.stem(x_t), s_stem)
+            x = self.to_block(x0)
+            skip1 = x
+            z11, s11 = self.lif_b1_1(self.b1_c1(x), s11)
+            z12, s12 = self.lif_b1_2(self.b1_c2(z11), s12)
+            x = z12 + skip1
+            skip2 = x
+            z21, s21 = self.lif_b2_1(self.b2_c1(x), s21)
+            z22, s22 = self.lif_b2_2(self.b2_c2(z21), s22)
+            x = z22 + skip2
+            y_t = self.head(jnp.mean(x, axis=(1, 2)))
+            sr = jnp.stack([jnp.mean(x0), jnp.mean(z12), jnp.mean(z22)])
+            return (s_stem, s11, s12, s21, s22), (y_t, sr)
+
+        _, (logits_seq, spike_rate_seq) = hk.scan(step, states, x_seq)
+        return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "spike_rate": jnp.mean(spike_rate_seq, axis=0)}
+
+
+class MultiTimescaleLIFBlock(hk.Module):
+    def __init__(self, cfg: MultiTimescaleConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        h = cfg.hidden_dim
+        self.proj = hk.Linear(h)
+        self.lif_fast = snn.LIF((h,), beta=cfg.beta_fast, threshold=cfg.threshold)
+        self.lif_mid = snn.LIF((h,), beta=cfg.beta_mid, threshold=cfg.threshold)
+        self.lif_slow = snn.LIF((h,), beta=cfg.beta_slow, threshold=cfg.threshold)
+        self.fuse = hk.Linear(h)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _ = x_seq.shape
+        states = (
+            self.lif_fast.initial_state(batch),
+            self.lif_mid.initial_state(batch),
+            self.lif_slow.initial_state(batch),
+        )
+
+        def step(carry, x_t):
+            sf, sm, ss = carry
+            x = self.proj(x_t)
+            y_f, sf = self.lif_fast(x, sf)
+            y_m, sm = self.lif_mid(x, sm)
+            y_s, ss = self.lif_slow(x, ss)
+            fused = self.fuse(jnp.concatenate([y_f, y_m, y_s], axis=-1))
+            y_t = self.head(fused)
+            sr = jnp.stack([jnp.mean(y_f), jnp.mean(y_m), jnp.mean(y_s)])
+            return (sf, sm, ss), (y_t, sr)
+
+        _, (logits_seq, spike_rate_seq) = hk.scan(step, states, x_seq)
+        return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "spike_rate": jnp.mean(spike_rate_seq, axis=0)}
+
+
+class TinyRecurrentSpikingBlock(hk.Module):
+    def __init__(self, cfg: RecurrentBlockConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.in_proj = hk.Linear(cfg.hidden_dim)
+        self.core = snn.RLIF((cfg.hidden_dim,), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _ = x_seq.shape
+        state = self.core.initial_state(batch)
+
+        def step(carry, x_t):
+            h_t, carry = self.core(self.in_proj(x_t), carry)
+            y_t = self.head(h_t)
+            sr = jnp.mean(h_t)
+            return carry, (y_t, sr)
+
+        _, (logits_seq, spike_rate_seq) = hk.scan(step, state, x_seq)
+        return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "spike_rate": jnp.asarray([jnp.mean(spike_rate_seq)])}
+
+
+class HybridSNNEncoderHead(hk.Module):
+    def __init__(self, cfg: HybridEncoderConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        k = cfg.kernel_size
+        h, w = cfg.input_hw
+        self.conv1 = hk.Conv2D(cfg.channels1, kernel_shape=k, stride=1, padding=cfg.padding)
+        self.conv2 = hk.Conv2D(cfg.channels2, kernel_shape=k, stride=1, padding=cfg.padding)
+        self.lif1 = snn.LIF((h, w, cfg.channels1), beta=cfg.beta, threshold=cfg.threshold)
+        self.lif2 = snn.LIF((h, w, cfg.channels2), beta=cfg.beta, threshold=cfg.threshold)
+        self.head1 = hk.Linear(cfg.head_hidden)
+        self.head2 = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        v1 = self.lif1.initial_state(batch)
+        v2 = self.lif2.initial_state(batch)
+
+        def step(carry, x_t):
+            c1, c2 = carry
+            s1, c1 = self.lif1(self.conv1(x_t), c1)
+            s2, c2 = self.lif2(self.conv2(s1), c2)
+            pooled = jnp.mean(s2, axis=(1, 2))
+            sr = jnp.stack([jnp.mean(s1), jnp.mean(s2)])
+            return (c1, c2), (pooled, sr)
+
+        _, (enc_seq, spike_rate_seq) = hk.scan(step, (v1, v2), x_seq)
+        enc = _readout(enc_seq, self.cfg.readout)
+        logits = self.head2(jax.nn.relu(self.head1(enc)))
+        return logits, {"encoder_seq": enc_seq, "spike_rate": jnp.mean(spike_rate_seq, axis=0)}

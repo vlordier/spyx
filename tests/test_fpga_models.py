@@ -136,3 +136,84 @@ def test_benchmark_forward_returns_summary():
     assert summary["params"] > 0
     assert summary["logits_shape"] == (2, cfg.output_dim)
     assert "spike_rate" in summary
+
+
+def test_residual_shallow_spiking_cnn_forward_shape():
+    cfg = fm.ResidualConvConfig(
+        input_hw=(8, 8),
+        input_channels=2,
+        stem_channels=6,
+        block_channels=6,
+        output_dim=5,
+    )
+
+    def forward(x):
+        model = fm.ResidualShallowSpikingCNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((4, 2, 8, 8, 2), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(8), x)
+    logits, spike_rate = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (3,)
+
+
+def test_multi_timescale_lif_block_forward_shape():
+    cfg = fm.MultiTimescaleConfig(input_dim=12, hidden_dim=10, output_dim=4)
+
+    def forward(x):
+        model = fm.MultiTimescaleLIFBlock(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((5, 2, cfg.input_dim), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(9), x)
+    logits, spike_rate = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (3,)
+
+
+def test_tiny_recurrent_spiking_block_forward_shape():
+    cfg = fm.RecurrentBlockConfig(input_dim=9, hidden_dim=7, output_dim=3)
+
+    def forward(x):
+        model = fm.TinyRecurrentSpikingBlock(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((6, 2, cfg.input_dim), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(10), x)
+    logits, spike_rate = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (1,)
+
+
+def test_hybrid_snn_encoder_head_forward_shape():
+    cfg = fm.HybridEncoderConfig(
+        input_hw=(8, 8),
+        input_channels=2,
+        channels1=4,
+        channels2=6,
+        head_hidden=8,
+        output_dim=5,
+    )
+
+    def forward(x):
+        model = fm.HybridSNNEncoderHead(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((4, 2, 8, 8, 2), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(11), x)
+    logits, spike_rate = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (2,)
