@@ -28,6 +28,20 @@ class ClassificationDataset:
 
 
 @dataclass(frozen=True)
+class RegressionDataset:
+    """Dataset for regression tasks where targets are continuous-valued vectors."""
+
+    train_obs: Array
+    train_targets: Array  # shape: (N, target_dim)
+    val_obs: Array
+    val_targets: Array
+    test_obs: Array
+    test_targets: Array
+    sample_T: int
+    target_dim: int
+
+
+@dataclass(frozen=True)
 class ExperimentArtifacts:
     transformed: hk.Transformed
     optimizer: optax.GradientTransformation
@@ -146,6 +160,111 @@ def summarize_epoch(metrics_seq: list[dict[str, Array]]) -> dict[str, float]:
             continue
         summary[key] = value
     return summary
+
+
+def make_train_step_regression(artifacts: ExperimentArtifacts, target_dim: int):
+    @jax.jit
+    def train_step(params: hk.Params, opt_state: optax.OptState, obs: Array, targets: Array):
+        def loss_fn(current_params: hk.Params):
+            preds, aux = artifacts.transformed.apply(current_params, obs)
+            loss = jnp.mean((preds - targets) ** 2)
+            metrics = {
+                "loss": loss,
+                "mse": loss,
+                "mae": jnp.mean(jnp.abs(preds - targets)),
+                "spike_rate": _aux_scalar(aux, "spike_rate"),
+                "active_ratio": _aux_scalar(aux, "active_ratio"),
+            }
+            return loss, metrics
+
+        (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+        updates, opt_state = artifacts.optimizer.update(grads, opt_state, params)
+        params = optax.apply_updates(params, updates)
+        return params, opt_state, metrics
+
+    return train_step
+
+
+def make_eval_step_regression(artifacts: ExperimentArtifacts):
+    @jax.jit
+    def eval_step(params: hk.Params, obs: Array, targets: Array):
+        preds, aux = artifacts.transformed.apply(params, obs)
+        return {
+            "loss": jnp.mean((preds - targets) ** 2),
+            "mse": jnp.mean((preds - targets) ** 2),
+            "mae": jnp.mean(jnp.abs(preds - targets)),
+            "spike_rate": _aux_scalar(aux, "spike_rate"),
+            "active_ratio": _aux_scalar(aux, "active_ratio"),
+        }
+
+    return eval_step
+
+
+def run_regression_experiment(
+    *,
+    name: str,
+    dataset: RegressionDataset,
+    model_factory: ModelFactory,
+    batch_size: int,
+    learning_rate: float,
+    epochs: int,
+    seed: int,
+) -> dict[str, dict[str, float]]:
+    """Run a regression experiment using MSE loss.
+
+    Each sample consists of an observation tensor (e.g. rasterized events)
+    and a continuous-valued target vector (e.g. 6DOF pose delta).
+    """
+    sample_input = unpack_time_major(dataset.train_obs[:batch_size], dataset.sample_T)
+    artifacts, params, opt_state = build_experiment(model_factory, sample_input, learning_rate, seed)
+    train_step = make_train_step_regression(artifacts, dataset.target_dim)
+    eval_step = make_eval_step_regression(artifacts)
+
+    rng = jax.random.PRNGKey(seed)
+    history: dict[str, dict[str, float]] = {}
+
+    for epoch in range(epochs):
+        rng, train_key = jax.random.split(rng)
+        train_obs_batches, train_target_batches = make_batches(
+            dataset.train_obs, dataset.train_targets, batch_size, train_key
+        )
+        train_metrics = []
+        for obs_batch, target_batch in zip(train_obs_batches, train_target_batches, strict=False):
+            obs = unpack_time_major(obs_batch, dataset.sample_T)
+            params, opt_state, metrics = train_step(params, opt_state, obs, target_batch)
+            train_metrics.append(metrics)
+
+        val_obs_batches, val_target_batches = make_batches(dataset.val_obs, dataset.val_targets, batch_size)
+        val_metrics = []
+        for obs_batch, target_batch in zip(val_obs_batches, val_target_batches, strict=False):
+            obs = unpack_time_major(obs_batch, dataset.sample_T)
+            val_metrics.append(eval_step(params, obs, target_batch))
+
+        train_summary = summarize_epoch(train_metrics)
+        val_summary = summarize_epoch(val_metrics)
+        history[f"epoch_{epoch + 1}"] = {
+            **{f"train_{key}": value for key, value in train_summary.items()},
+            **{f"val_{key}": value for key, value in val_summary.items()},
+        }
+        print(
+            f"[{name}] epoch={epoch + 1} "
+            f"train_mse={train_summary['mse']:.6f} train_mae={train_summary['mae']:.6f} "
+            f"val_mse={val_summary['mse']:.6f} val_mae={val_summary['mae']:.6f}"
+        )
+
+    test_obs_batches, test_target_batches = make_batches(
+        dataset.test_obs, dataset.test_targets, batch_size
+    )
+    test_metrics = []
+    for obs_batch, target_batch in zip(test_obs_batches, test_target_batches, strict=False):
+        obs = unpack_time_major(obs_batch, dataset.sample_T)
+        test_metrics.append(eval_step(params, obs, target_batch))
+    history["test"] = summarize_epoch(test_metrics)
+    print(
+        f"[{name}] test_mse={history['test']['mse']:.6f} "
+        f"test_mae={history['test']['mae']:.6f}"
+    )
+    return history
 
 
 def run_classification_experiment(

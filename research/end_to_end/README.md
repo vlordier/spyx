@@ -7,6 +7,7 @@ These small research scripts run recent Spyx reference models on real Tonic-back
 - `nmnist_logpolar.py`: `LogPolarFoveatedConvSNN` on NMNIST.
 - `nmnist_event_pooling.py`: `EventDrivenPoolingSNN` on NMNIST.
 - `dvs_gesture_foveated.py`: `IntegratedWTAFoveatedSNN` or `EventDrivenSparseFoveatedSNN` on DVS Gesture.
+- `tumvie_vo.py`: `ConvLIFSNN` for 6DOF visual-inertial odometry on the TUM-VIE drone recording.
 - `shd_tiny_transformer.py`: `TinySpikingTransformerSNN` on SHD.
 - `shd_spike_frequency.py`: `SpikeFrequencyCodedSNN` on SHD.
 
@@ -22,12 +23,14 @@ The experiments are packaged via `pyproject.toml`, so they can be run either as 
 python -m research.end_to_end.nmnist_logpolar --epochs 3 --train-limit 1024 --eval-limit 256
 python -m research.end_to_end.nmnist_event_pooling --epochs 3 --train-limit 1024 --eval-limit 256
 python -m research.end_to_end.dvs_gesture_foveated --variant integrated-wta --epochs 3 --train-limit 256 --eval-limit 64
+python -m research.end_to_end.tumvie_vo --recording mocap-6dof --epochs 3 --train-limit 512 --eval-limit 128
 python -m research.end_to_end.shd_tiny_transformer --epochs 3 --channels 72 --sample-t 64 --train-limit 2048 --eval-limit 512
 python -m research.end_to_end.shd_spike_frequency --epochs 3 --channels 72 --sample-t 64 --train-limit 2048 --eval-limit 512
 
 spyx-exp-nmnist-logpolar --epochs 3 --train-limit 1024 --eval-limit 256
 spyx-exp-nmnist-event-pooling --epochs 3 --train-limit 1024 --eval-limit 256
 spyx-exp-dvs-gesture-foveated --variant integrated-wta --epochs 3 --train-limit 256 --eval-limit 64
+spyx-exp-tumvie-vo --recording mocap-6dof --epochs 3 --train-limit 512 --eval-limit 128
 spyx-exp-shd-tiny-transformer --epochs 3 --channels 72 --sample-t 64 --train-limit 2048 --eval-limit 512
 spyx-exp-shd-spike-frequency --epochs 3 --channels 72 --sample-t 64 --train-limit 2048 --eval-limit 512
 ```
