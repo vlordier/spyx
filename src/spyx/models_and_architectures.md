@@ -5,6 +5,11 @@ This file consolidates architecture recommendations for a Spyx-based pipeline ta
 
 It merges all prior notes into one consistent reference, preserving the original recommendations while removing repeated chat-style restatements.
 
+### Consolidation Status
+- Consolidated source: [src/spyx/SPNN.md](src/spyx/SPNN.md).
+- Consolidated content includes: core top-10 ranking, high/medium-value extension lists, foveated/spherical prioritization, ternary-robust guidance, and experiment-matrix planning guidance.
+- This file is the canonical architecture roadmap to avoid divergence between duplicate documents.
+
 ## Implementation Checklist (Spyx)
 Status is tracked against reference implementations in [src/spyx/fpga_models.py](src/spyx/fpga_models.py).
 
