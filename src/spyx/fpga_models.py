@@ -556,3 +556,544 @@ class HybridSNNEncoderHead(hk.Module):
         enc = _readout(enc_seq, self.cfg.readout)
         logits = self.head2(jax.nn.relu(self.head1(enc)))
         return logits, {"encoder_seq": enc_seq, "spike_rate": jnp.mean(spike_rate_seq, axis=0)}
+
+
+def _topk_mask(x: jnp.ndarray, k: int, axis: int = -1) -> jnp.ndarray:
+    if k <= 0:
+        return jnp.zeros_like(x)
+    dim = x.shape[axis]
+    if dim == 0:
+        return jnp.zeros_like(x)
+    k = min(k, dim)
+    top_vals, _ = jax.lax.top_k(x, k)
+    thresh = jnp.take(top_vals, k - 1, axis=-1)
+    while thresh.ndim < x.ndim:
+        thresh = jnp.expand_dims(thresh, axis=-1)
+    return (x >= thresh).astype(x.dtype)
+
+
+class KWTASaliencyGate(hk.Module):
+    """k-WTA saliency gate over channels."""
+
+    def __init__(self, k: int, name: str | None = None):
+        super().__init__(name=name)
+        self.k = k
+
+    def __call__(self, x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+        saliency = jnp.mean(jnp.abs(x), axis=tuple(range(1, x.ndim - 1)))
+        gate = _topk_mask(saliency, self.k, axis=-1)
+        expand_shape = (slice(None),) + (None,) * (x.ndim - 2) + (slice(None),)
+        x_gated = x * gate[expand_shape]
+        return x_gated, gate
+
+
+class TimeSurfaceEncoder(hk.Module):
+    """Simple differentiable time-surface encoder using exponential decay."""
+
+    def __init__(self, tau: float = 4.0, name: str | None = None):
+        super().__init__(name=name)
+        self.tau = tau
+
+    def __call__(self, x_seq: jnp.ndarray) -> jnp.ndarray:
+        t = x_seq.shape[0]
+        idx = jnp.arange(t, dtype=x_seq.dtype)
+        dt = (idx[-1] - idx) / jnp.maximum(self.tau, 1e-6)
+        w = jnp.exp(-dt).reshape((t, 1, 1, 1, 1))
+        return x_seq * w
+
+
+@dataclass
+class FoveatedDualPathConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    fovea_hw: tuple[int, int]
+    channels_fovea: int
+    channels_periphery: int
+    output_dim: int
+    kernel_size: int = 3
+    beta: float = 0.9
+    threshold: float = 1.0
+    padding: str = "SAME"
+    readout: str = "mean"
+
+
+class FoveatedDualPathSNN(hk.Module):
+    """Dual-path fovea/periphery spiking encoder."""
+
+    def __init__(self, cfg: FoveatedDualPathConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.fovea_conv = hk.Conv2D(cfg.channels_fovea, kernel_shape=cfg.kernel_size, padding=cfg.padding)
+        self.periph_conv = hk.Conv2D(cfg.channels_periphery, kernel_shape=cfg.kernel_size, padding=cfg.padding)
+        fh, fw = cfg.fovea_hw
+        h, w = cfg.input_hw
+        self.fovea_lif = snn.LIF((fh, fw, cfg.channels_fovea), beta=cfg.beta, threshold=cfg.threshold)
+        self.periph_lif = snn.LIF((h // 2, w // 2, cfg.channels_periphery), beta=cfg.beta, threshold=cfg.threshold)
+        self.fuse = hk.Linear(cfg.output_dim)
+
+    def _crop_fovea(self, x: jnp.ndarray) -> jnp.ndarray:
+        h, w = x.shape[1], x.shape[2]
+        fh, fw = self.cfg.fovea_hw
+        hs = (h - fh) // 2
+        ws = (w - fw) // 2
+        return x[:, hs : hs + fh, ws : ws + fw, :]
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        sf = self.fovea_lif.initial_state(batch)
+        sp = self.periph_lif.initial_state(batch)
+
+        def step(carry, x_t):
+            c_f, c_p = carry
+            fovea = self._crop_fovea(x_t)
+            periph = jax.image.resize(x_t, (x_t.shape[0], x_t.shape[1] // 2, x_t.shape[2] // 2, x_t.shape[3]), method="linear")
+            y_f, c_f = self.fovea_lif(self.fovea_conv(fovea), c_f)
+            y_p, c_p = self.periph_lif(self.periph_conv(periph), c_p)
+            z = jnp.concatenate([jnp.mean(y_f, axis=(1, 2)), jnp.mean(y_p, axis=(1, 2))], axis=-1)
+            logits = self.fuse(z)
+            sr = jnp.stack([jnp.mean(y_f), jnp.mean(y_p)])
+            return (c_f, c_p), (logits, sr)
+
+        _, (logits_seq, spike_rate_seq) = hk.scan(step, (sf, sp), x_seq)
+        return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "spike_rate": jnp.mean(spike_rate_seq, axis=0)}
+
+
+@dataclass
+class IMUConditionedConfig:
+    vision_cfg: ConvConfig
+    imu_dim: int
+    imu_hidden: int
+    gating: str = "late"  # late | hard
+    readout: str = "mean"
+
+
+class IMUConditionedVisualSNN(hk.Module):
+    """Visual Conv-LIF encoder conditioned by IMU branch."""
+
+    def __init__(self, cfg: IMUConditionedConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.vision = ConvLIFSNN(cfg.vision_cfg)
+        self.imu_proj = hk.nets.MLP([cfg.imu_hidden, cfg.vision_cfg.output_dim])
+
+    def __call__(self, x_seq: jnp.ndarray, imu_seq: jnp.ndarray):
+        logits_v, aux_v = self.vision(x_seq)
+        imu_feat = jnp.mean(self.imu_proj(imu_seq), axis=0)
+        if self.cfg.gating == "hard":
+            gate = (imu_feat > 0).astype(logits_v.dtype)
+            logits = logits_v * gate
+        else:
+            logits = logits_v + imu_feat
+        return logits, {"spike_rate": aux_v["spike_rate"], "imu_feature": imu_feat}
+
+
+@dataclass
+class VisualIMURecurrentConfig:
+    vision_cfg: ConvConfig
+    imu_dim: int
+    traj_dim: int
+    hidden_dim: int
+    output_dim: int
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class VisualIMURecurrentFusionBlock(hk.Module):
+    """Tiny recurrent fusion of visual, IMU, and trajectory latents."""
+
+    def __init__(self, cfg: VisualIMURecurrentConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.vision = ConvLIFSNN(cfg.vision_cfg)
+        self.in_proj = hk.Linear(cfg.hidden_dim)
+        self.core = snn.RLIF((cfg.hidden_dim,), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray, imu_seq: jnp.ndarray, traj_seq: jnp.ndarray):
+        _, aux = self.vision(x_seq)
+        vis_seq = aux["logits_seq"]
+        _, batch, _ = imu_seq.shape
+        state = self.core.initial_state(batch)
+        fuse_seq = jnp.concatenate([vis_seq, imu_seq, traj_seq], axis=-1)
+
+        def step(carry, x_t):
+            h_t, carry = self.core(self.in_proj(x_t), carry)
+            y_t = self.head(h_t)
+            return carry, y_t
+
+        _, logits_seq = hk.scan(step, state, fuse_seq)
+        return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "spike_rate": aux["spike_rate"]}
+
+
+@dataclass
+class KalmanFusionConfig:
+    latent_dim: int
+    output_dim: int
+    readout: str = "mean"
+
+
+class KalmanStyleSpikingFusionSurrogate(hk.Module):
+    """Prediction-correction style latent fusion surrogate."""
+
+    def __init__(self, cfg: KalmanFusionConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.predictor = hk.Linear(cfg.latent_dim)
+        self.corrector = hk.Linear(cfg.latent_dim)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, visual_seq: jnp.ndarray, imu_seq: jnp.ndarray):
+        pred = self.predictor(imu_seq)
+        innovation = visual_seq - pred
+        corr = pred + self.corrector(innovation)
+        logits_seq = self.head(corr)
+        return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "innovation_norm": jnp.mean(jnp.abs(innovation))}
+
+
+@dataclass
+class OpticalFlowConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    channels: int
+    output_dim: int
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class SpikingOpticalFlowBranch(hk.Module):
+    """Spike-compatible optical-flow proxy using temporal frame differences."""
+
+    def __init__(self, cfg: OpticalFlowConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        h, w = cfg.input_hw
+        self.flow_conv = hk.Conv2D(cfg.channels, kernel_shape=3, padding="SAME")
+        self.lif = snn.LIF((h, w, cfg.channels), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        state = self.lif.initial_state(batch)
+        flow_seq = x_seq[1:] - x_seq[:-1]
+
+        def step(carry, x_t):
+            s_t, carry = self.lif(self.flow_conv(x_t), carry)
+            y_t = self.head(jnp.mean(s_t, axis=(1, 2)))
+            return carry, (y_t, jnp.mean(s_t))
+
+        _, (logits_seq, sr_seq) = hk.scan(step, state, flow_seq)
+        return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "spike_rate": jnp.asarray([jnp.mean(sr_seq)])}
+
+
+@dataclass
+class StereoCoincidenceConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    channels: int
+    output_dim: int
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class StereoCoincidenceSNN(hk.Module):
+    """Local stereo coincidence/disparity proxy branch."""
+
+    def __init__(self, cfg: StereoCoincidenceConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        h, w = cfg.input_hw
+        self.conv = hk.Conv2D(cfg.channels, kernel_shape=3, padding="SAME")
+        self.lif = snn.LIF((h, w, cfg.channels), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, left_seq: jnp.ndarray, right_seq: jnp.ndarray):
+        _, batch, _, _, _ = left_seq.shape
+        state = self.lif.initial_state(batch)
+        coincidence = jnp.concatenate([left_seq, right_seq, jnp.abs(left_seq - right_seq)], axis=-1)
+
+        def step(carry, x_t):
+            s_t, carry = self.lif(self.conv(x_t), carry)
+            y_t = self.head(jnp.mean(s_t, axis=(1, 2)))
+            return carry, (y_t, jnp.mean(s_t))
+
+        _, (logits_seq, sr_seq) = hk.scan(step, state, coincidence)
+        return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "spike_rate": jnp.asarray([jnp.mean(sr_seq)])}
+
+
+@dataclass
+class MotionCompConfig:
+    vision_cfg: ConvConfig
+    imu_scale: float = 1.0
+
+
+class MotionCompensatedInputFrontEnd(hk.Module):
+    """IMU-conditioned coarse de-rotation front-end with visual encoder."""
+
+    def __init__(self, cfg: MotionCompConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.encoder = ConvLIFSNN(cfg.vision_cfg)
+
+    def __call__(self, x_seq: jnp.ndarray, imu_seq: jnp.ndarray):
+        # Use first two IMU channels as coarse integer translation proxy.
+        shift_xy = jnp.round(imu_seq[..., :2] * self.cfg.imu_scale).astype(jnp.int32)
+
+        def shift_step(x_t, s_t):
+            dx = s_t[:, 0]
+            dy = s_t[:, 1]
+
+            def shift_one(img, sx, sy):
+                return jnp.roll(jnp.roll(img, sx, axis=0), sy, axis=1)
+
+            return jax.vmap(shift_one)(x_t, dx, dy)
+
+        x_comp = jax.vmap(shift_step, in_axes=(0, 0))(x_seq, shift_xy)
+        logits, aux = self.encoder(x_comp)
+        return logits, {"spike_rate": aux["spike_rate"], "x_comp": x_comp}
+
+
+@dataclass
+class GazeControlConfig:
+    input_dim: int
+    imu_dim: int
+    traj_dim: int
+    num_regions: int
+
+
+class GazeControlPolicyHead(hk.Module):
+    """Policy head predicting top-k gaze regions."""
+
+    def __init__(self, cfg: GazeControlConfig, top_k: int = 1, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.top_k = top_k
+        self.mlp = hk.nets.MLP([64, cfg.num_regions])
+
+    def __call__(self, periph_seq: jnp.ndarray, imu_seq: jnp.ndarray, traj_seq: jnp.ndarray):
+        x = jnp.concatenate([
+            jnp.mean(periph_seq, axis=0),
+            jnp.mean(imu_seq, axis=0),
+            jnp.mean(traj_seq, axis=0),
+        ], axis=-1)
+        scores = self.mlp(x)
+        gate = _topk_mask(scores, self.top_k)
+        return scores, {"region_gate": gate}
+
+
+class RegionActivationRouter(hk.Module):
+    """Tile router selecting top-k active patches for downstream compute."""
+
+    def __init__(self, top_k: int = 4, patch: int = 4, name: str | None = None):
+        super().__init__(name=name)
+        self.top_k = top_k
+        self.patch = patch
+
+    def __call__(self, x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+        # x: [B, H, W, C]
+        b, h, w, _ = x.shape
+        ph = h // self.patch
+        pw = w // self.patch
+        x_crop = x[:, : ph * self.patch, : pw * self.patch, :]
+        patches = x_crop.reshape(b, ph, self.patch, pw, self.patch, -1)
+        scores = jnp.mean(jnp.abs(patches), axis=(2, 4, 5)).reshape(b, ph * pw)
+        gate = _topk_mask(scores, self.top_k)
+        return scores, gate
+
+
+@dataclass
+class TrajectoryConditionedConfig:
+    vision_dim: int
+    imu_dim: int
+    traj_dim: int
+    hidden_dim: int
+    output_dim: int
+    readout: str = "mean"
+
+
+class TrajectoryConditionedSpikingEncoder(hk.Module):
+    """Trajectory-conditioned latent encoder with hard/soft gain modulation."""
+
+    def __init__(self, cfg: TrajectoryConditionedConfig, hard_gate: bool = False, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.hard_gate = hard_gate
+        self.base = hk.Linear(cfg.hidden_dim)
+        self.gain = hk.Linear(cfg.hidden_dim)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, vis_seq: jnp.ndarray, imu_seq: jnp.ndarray, traj_seq: jnp.ndarray):
+        x = jnp.concatenate([vis_seq, imu_seq, traj_seq], axis=-1)
+        base = self.base(x)
+        g = jax.nn.sigmoid(self.gain(traj_seq))
+        if self.hard_gate:
+            g = (g > 0.5).astype(g.dtype)
+        fused = base * g
+        logits_seq = self.head(fused)
+        return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "gate_mean": jnp.mean(g)}
+
+
+@dataclass
+class PredictiveCodingConfig:
+    input_dim: int
+    latent_dim: int
+    output_dim: int
+    readout: str = "mean"
+
+
+class PredictiveCodingSNNBlock(hk.Module):
+    """Residual-error predictive coding style block."""
+
+    def __init__(self, cfg: PredictiveCodingConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.predictor = hk.Linear(cfg.latent_dim)
+        self.encoder = hk.Linear(cfg.latent_dim)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, obs_seq: jnp.ndarray):
+        pred_seq = self.predictor(obs_seq)
+        err = self.encoder(obs_seq) - pred_seq
+        logits_seq = self.head(err)
+        return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "error_norm": jnp.mean(jnp.abs(err))}
+
+
+@dataclass
+class MultiHeadConfig:
+    input_dim: int
+    hidden_dim: int
+    collision_dim: int
+    navigation_dim: int
+
+
+class CollisionNavigationMultiHead(hk.Module):
+    """Shared trunk with separate collision and navigation heads."""
+
+    def __init__(self, cfg: MultiHeadConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.trunk = hk.nets.MLP([cfg.hidden_dim, cfg.hidden_dim])
+        self.collision_head = hk.Linear(cfg.collision_dim)
+        self.navigation_head = hk.Linear(cfg.navigation_dim)
+
+    def __call__(self, x: jnp.ndarray):
+        h = self.trunk(x)
+        return {
+            "collision": self.collision_head(h),
+            "navigation": self.navigation_head(h),
+        }
+
+
+@dataclass
+class StructuredSparseConvConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    channels1: int
+    channels2: int
+    output_dim: int
+    sparsity: float = 0.5
+    kernel_size: int = 3
+    beta: float = 0.9
+    threshold: float = 1.0
+    padding: str = "SAME"
+    readout: str = "mean"
+
+
+def _block_sparse_mask(w: jnp.ndarray, sparsity: float, block: int = 4) -> jnp.ndarray:
+    h, w_k, cin, cout = w.shape
+    bh = h // block
+    bw = w_k // block
+    if bh == 0 or bw == 0:
+        return jnp.ones((h, w_k, 1, 1), dtype=w.dtype)
+    core = w[: bh * block, : bw * block, :, :]
+    blocks = core.reshape(bh, block, bw, block, cin, cout)
+    scores = jnp.mean(jnp.abs(blocks), axis=(1, 3, 4, 5)).reshape(-1)
+    keep = max(1, int(scores.shape[0] * (1.0 - sparsity)))
+    gate = _topk_mask(scores[None, :], keep).reshape(bh, bw)
+    gate = jnp.repeat(jnp.repeat(gate, block, axis=0), block, axis=1)
+    mask = jnp.ones((h, w_k), dtype=w.dtype)
+    mask = mask.at[: bh * block, : bw * block].set(gate)
+    return mask[:, :, None, None]
+
+
+class StructuredSparseConv2D(hk.Module):
+    def __init__(self, out_ch: int, kernel_size: int = 3, sparsity: float = 0.5, padding: str = "SAME", name: str | None = None):
+        super().__init__(name=name)
+        self.out_ch = out_ch
+        self.kernel_size = kernel_size
+        self.sparsity = sparsity
+        self.padding = padding
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        in_ch = x.shape[-1]
+        w = hk.get_parameter("w", (self.kernel_size, self.kernel_size, in_ch, self.out_ch), init=hk.initializers.VarianceScaling(1.0, "fan_avg", "uniform"))
+        mask = _block_sparse_mask(w, self.sparsity)
+        w_s = w * mask
+        return jax.lax.conv_general_dilated(x, w_s, (1, 1), self.padding, dimension_numbers=("NHWC", "HWIO", "NHWC"))
+
+
+class StructuredSparseSpikingCNN(hk.Module):
+    def __init__(self, cfg: StructuredSparseConvConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        h, w = cfg.input_hw
+        self.conv1 = StructuredSparseConv2D(cfg.channels1, kernel_size=cfg.kernel_size, sparsity=cfg.sparsity, padding=cfg.padding)
+        self.conv2 = StructuredSparseConv2D(cfg.channels2, kernel_size=cfg.kernel_size, sparsity=cfg.sparsity, padding=cfg.padding)
+        self.lif1 = snn.LIF((h, w, cfg.channels1), beta=cfg.beta, threshold=cfg.threshold)
+        self.lif2 = snn.LIF((h, w, cfg.channels2), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        v1 = self.lif1.initial_state(batch)
+        v2 = self.lif2.initial_state(batch)
+
+        def step(carry, x_t):
+            c1, c2 = carry
+            s1, c1 = self.lif1(self.conv1(x_t), c1)
+            s2, c2 = self.lif2(self.conv2(s1), c2)
+            y_t = self.head(jnp.mean(s2, axis=(1, 2)))
+            sr = jnp.stack([jnp.mean(s1), jnp.mean(s2)])
+            return (c1, c2), (y_t, sr)
+
+        _, (logits_seq, sr_seq) = hk.scan(step, (v1, v2), x_seq)
+        return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "spike_rate": jnp.mean(sr_seq, axis=0)}
+
+
+@dataclass
+class EarlyExitConfig:
+    input_dim: int
+    hidden_dim: int
+    output_dim: int
+    confidence_threshold: float = 0.8
+    readout: str = "mean"
+
+
+class EarlyExitAnytimeSNN(hk.Module):
+    """Anytime head that tracks earliest confident timestep."""
+
+    def __init__(self, cfg: EarlyExitConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.body = hk.nets.MLP([cfg.hidden_dim, cfg.hidden_dim])
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        h_seq = self.body(x_seq)
+        logits_seq = self.head(h_seq)
+        probs = jax.nn.softmax(logits_seq, axis=-1)
+        conf = jnp.max(probs, axis=-1)
+        done = conf > self.cfg.confidence_threshold
+        first = jnp.argmax(done, axis=0)
+        any_done = jnp.any(done, axis=0)
+        last_idx = jnp.full_like(first, x_seq.shape[0] - 1)
+        exit_idx = jnp.where(any_done, first, last_idx)
+        batch = jnp.arange(x_seq.shape[1])
+        logits_exit = logits_seq[exit_idx, batch]
+        return logits_exit, {
+            "logits_seq": logits_seq,
+            "exit_index": exit_idx,
+            "early_exit_rate": jnp.mean(any_done.astype(jnp.float32)),
+        }
