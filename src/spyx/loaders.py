@@ -305,11 +305,19 @@ class _SHD2Raster():
         self.sample_T = sample_T
         
     def __call__(self, events):
-        # tensor has dimensions (time_steps, encoding_dim)
-        tensor = np.zeros((events["t"].max()+1, self.encoding_dim), dtype=int)
-        np.add.at(tensor, (events["t"], events["x"]), 1)
-        #return tensor[:self.sample_T,:]
-        tensor = tensor[:self.sample_T,:]
+        # Build a fixed-size [time, channel] raster and guard against invalid timestamps.
+        tensor = np.zeros((self.sample_T, self.encoding_dim), dtype=np.uint8)
+        times = np.asarray(events["t"], dtype=np.float64)
+        channels = np.asarray(events["x"], dtype=np.int64)
+
+        if times.size == 0 or channels.size == 0:
+            return np.packbits(tensor, axis=0)
+
+        times = np.nan_to_num(times, nan=0.0, posinf=0.0, neginf=0.0)
+        times = np.clip(times, 0, self.sample_T - 1).astype(np.int64)
+        channels = np.clip(channels, 0, self.encoding_dim - 1)
+
+        np.add.at(tensor, (times, channels), 1)
         tensor = np.minimum(tensor, 1)
         tensor = np.packbits(tensor, axis=0)
         return tensor

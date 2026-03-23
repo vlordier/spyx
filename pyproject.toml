@@ -31,6 +31,7 @@ docs = [
 [project.scripts]
 spyx-exp-nmnist-logpolar = "research.end_to_end.nmnist_logpolar:main"
 spyx-exp-nmnist-event-pooling = "research.end_to_end.nmnist_event_pooling:main"
+spyx-exp-shd-spike-frequency = "research.end_to_end.shd_spike_frequency:main"
 spyx-exp-shd-tiny-transformer = "research.end_to_end.shd_tiny_transformer:main"
 
 [tool.uv.sources]
