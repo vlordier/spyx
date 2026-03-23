@@ -35,13 +35,16 @@ Status is tracked against reference implementations in [src/spyx/fpga_models.py]
 - [x] Kalman-style fusion surrogate -> `KalmanStyleSpikingFusionSurrogate`
 - [x] Spiking optical-flow branch -> `SpikingOpticalFlowBranch`
 - [x] Stereo coincidence/disparity proxy -> `StereoCoincidenceSNN`
+- [x] Stereo disparity / correlation family -> `StereoDisparityCorrelationSNN`
 - [x] Motion-compensated input front-end -> `MotionCompensatedInputFrontEnd`
 - [x] Gaze-control policy head -> `GazeControlPolicyHead`
 - [x] Region-activation router -> `RegionActivationRouter`
 - [x] Trajectory-conditioned encoder -> `TrajectoryConditionedSpikingEncoder`
 - [x] Predictive-coding block -> `PredictiveCodingSNNBlock`
 - [x] Collision + navigation multi-head -> `CollisionNavigationMultiHead`
+- [x] Hybrid SNN + classical filters pipeline -> `HybridClassicalFilterSNN`
 - [x] Structured-sparse spiking CNN -> `StructuredSparseSpikingCNN`
+- [x] Event-driven pooling variants -> `EventDrivenPoolingSNN`
 - [x] Early-exit/anytime inference head -> `EarlyExitAnytimeSNN`
 
 ### Notes
@@ -73,11 +76,14 @@ These exist as concrete reference modules in `src/spyx/fpga_models.py` and are c
 | Visual-IMU recurrent fusion | `VisualIMURecurrentFusionBlock` |
 | Kalman-style fusion surrogate | `KalmanStyleSpikingFusionSurrogate` |
 | Spiking optical-flow branch | `SpikingOpticalFlowBranch` |
+| Stereo disparity / correlation family | `StereoDisparityCorrelationSNN` |
 | Motion-compensated input front-end | `MotionCompensatedInputFrontEnd` |
 | Region-activation router | `RegionActivationRouter` |
 | Trajectory-conditioned encoder | `TrajectoryConditionedSpikingEncoder` |
 | Predictive-coding block | `PredictiveCodingSNNBlock` |
+| Hybrid SNN + classical filters pipeline | `HybridClassicalFilterSNN` |
 | Structured-sparse spiking CNN | `StructuredSparseSpikingCNN` |
+| Event-driven pooling variants | `EventDrivenPoolingSNN` |
 | Early-exit / anytime head | `EarlyExitAnytimeSNN` |
 
 ### Implemented as Approximation or Composition
@@ -86,7 +92,6 @@ These are present in practical form, but not as literal one-to-one realizations 
 | Roadmap concept | Current state |
 | --- | --- |
 | Foveated dual-path / multi-scale SNN | Implemented as `FoveatedDualPathSNN` |
-| Stereo correlation / disparity family | Proxy only via `StereoCoincidenceSNN`, not a full disparity-cost family |
 | Collision-risk head + navigation-value head | Implemented as `CollisionNavigationMultiHead`, not a fully spiking integrated family |
 | Gaze-control policy head | Implemented as `GazeControlPolicyHead`, but not a full gaze-control SNN family |
 | WTA-driven foveation | Achievable by composing `KWTASaliencyGate`, `RegionActivationRouter`, and `FoveatedDualPathSNN` |
@@ -103,13 +108,11 @@ These are described in the roadmap but do not yet have dedicated implementations
 | Spherical-geometry spike-routing graph | Not implemented |
 | Spherical harmonic / frequency-domain SNN | Not implemented |
 | Small liquid state machine | Not implemented |
-| Event-driven pooling variants as dedicated architecture family | Not implemented as dedicated modules |
 | Tiny spiking autoencoder | Not implemented |
-| Hybrid SNN + classical filters pipeline | Not implemented as a named module |
 | Delay-based SNN | Not implemented |
 | Population coding as dedicated architecture family | Not implemented as a model family |
 | Spike-frequency vs time-to-first-spike coding family | Not implemented as dedicated variants |
-| Stereo foveated correlation family with disparity bins / left-right consistency | Not implemented literally |
+| Stereo foveated correlation family with disparity bins / left-right consistency | Partially implemented via `StereoDisparityCorrelationSNN`; not yet foveated |
 | Hard-gated mixture-of-experts family | Not implemented |
 | Frequency-domain or graph-based spherical models | Not implemented |
 
@@ -119,9 +122,6 @@ This table focuses on the remaining gaps and ranks them by implementation value 
 ### Implement Next
 | Item | Current state in Spyx | Effort | Why next |
 | --- | --- | --- | --- |
-| Stereo disparity / correlation family | Only proxy `StereoCoincidenceSNN` exists | Medium | Depth is core to the target stack |
-| Event-driven pooling variants | Not a dedicated architecture module | Low | Useful primitive, low risk |
-| Hybrid SNN + classical filters | Not implemented | Low | High practical value and FPGA fit |
 | Tiny spiking autoencoder | Not implemented | Low-Medium | Useful for latent compression studies |
 | Population coding variant | Not implemented as a model family | Low | Small change with robustness value |
 
@@ -145,15 +145,12 @@ This table focuses on the remaining gaps and ranks them by implementation value 
 | Bio-detailed neurons, transformers, STDP-heavy models | Not implemented | High | Explicitly deprioritized by this roadmap |
 
 ### Recommended Order to Close Gaps
-1. Stereo disparity / correlation family.
-2. Hybrid SNN + classical filters.
-3. Event-driven pooling variants.
-4. Tiny spiking autoencoder.
-5. Population coding variant.
-6. Time-to-first-spike / latency-coded heads.
-7. Integrated WTA-driven foveation stack.
-8. Hard-gated mixture-of-experts.
-9. Delay-based, spherical-graph, and frequency-domain ideas only after the above.
+1. Tiny spiking autoencoder.
+2. Population coding variant.
+3. Time-to-first-spike / latency-coded heads.
+4. Integrated WTA-driven foveation stack.
+5. Hard-gated mixture-of-experts.
+6. Delay-based, spherical-graph, and frequency-domain ideas only after the above.
 
 ## System Context
 Primary context:

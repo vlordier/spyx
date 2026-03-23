@@ -675,6 +675,53 @@ def _sample_log_polar_image(x: jnp.ndarray, ys: jnp.ndarray, xs: jnp.ndarray) ->
     return jax.vmap(sample_batch)(x)
 
 
+def _shift_horizontally(x: jnp.ndarray, disparity: int) -> jnp.ndarray:
+    if disparity == 0:
+        return x
+    pad = jnp.zeros((x.shape[0], x.shape[1], disparity, x.shape[3]), dtype=x.dtype)
+    return jnp.concatenate([x[:, :, disparity:, :], pad], axis=2)
+
+
+def _fixed_filter_response(x: jnp.ndarray, kernel: jnp.ndarray) -> jnp.ndarray:
+    gray = jnp.mean(x, axis=-1, keepdims=True)
+    kernel = kernel[:, :, None, None].astype(x.dtype)
+    return jax.lax.conv_general_dilated(gray, kernel, (1, 1), "SAME", dimension_numbers=("NHWC", "HWIO", "NHWC"))
+
+
+def _classical_filter_bank(x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+    sobel_x = jnp.asarray([[1.0, 0.0, -1.0], [2.0, 0.0, -2.0], [1.0, 0.0, -1.0]])
+    sobel_y = sobel_x.T
+    laplace = jnp.asarray([[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]])
+    dog = jnp.asarray([[0.0, -1.0, 0.0], [-1.0, 4.0, -1.0], [0.0, -1.0, 0.0]])
+    gx = _fixed_filter_response(x, sobel_x)
+    gy = _fixed_filter_response(x, sobel_y)
+    sobel_mag = jnp.sqrt(jnp.maximum(gx * gx + gy * gy, 1e-6))
+    lap = _fixed_filter_response(x, laplace)
+    dog_resp = _fixed_filter_response(x, dog)
+    features = jnp.concatenate([x, sobel_mag, lap, dog_resp], axis=-1)
+    energy = jnp.stack([jnp.mean(jnp.abs(sobel_mag)), jnp.mean(jnp.abs(lap)), jnp.mean(jnp.abs(dog_resp))])
+    return features, energy
+
+
+def _event_pool_features(x: jnp.ndarray, event_threshold: float, pool_modes: tuple[str, ...]) -> tuple[jnp.ndarray, jnp.ndarray]:
+    activity = jnp.max(jnp.abs(x), axis=-1, keepdims=True)
+    event_mask = (activity > event_threshold).astype(x.dtype)
+    active = x * event_mask
+    denom = jnp.maximum(jnp.sum(event_mask, axis=(1, 2)), 1.0)
+    pooled_features = []
+    for mode in pool_modes:
+        if mode == "avg":
+            pooled = jnp.sum(active, axis=(1, 2)) / denom
+        elif mode == "max":
+            pooled = jnp.max(active, axis=(1, 2))
+        elif mode == "l2":
+            pooled = jnp.sqrt(jnp.sum(active * active, axis=(1, 2)) / denom)
+        else:
+            raise ValueError(f"Unsupported pooling mode {mode}")
+        pooled_features.append(pooled)
+    return jnp.concatenate(pooled_features, axis=-1), jnp.mean(event_mask)
+
+
 class LogPolarFoveatedConvSNN(hk.Module):
     """Log-polar foveated convolutional SNN with an explicit geometric front-end."""
 
@@ -928,6 +975,77 @@ class StereoCoincidenceSNN(hk.Module):
 
 
 @dataclass
+class StereoDisparityConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    channels: int
+    output_dim: int
+    max_disparity: int = 3
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class StereoDisparityCorrelationSNN(hk.Module):
+    """Stereo cost-volume SNN with explicit disparity bins and consistency proxy."""
+
+    def __init__(self, cfg: StereoDisparityConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        h, w = cfg.input_hw
+        volume_channels = 2 * (cfg.max_disparity + 1)
+        self.conv = hk.Conv2D(cfg.channels, kernel_shape=3, padding="SAME")
+        self.lif = snn.LIF((h, w, cfg.channels), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+        self.volume_proj = hk.Linear(cfg.max_disparity + 1)
+
+    def _cost_volume(self, left: jnp.ndarray, right: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        corr_maps = []
+        sad_maps = []
+        disparity_score_list = []
+        reverse_score_list = []
+        for disparity in range(self.cfg.max_disparity + 1):
+            shifted_right = _shift_horizontally(right, disparity)
+            shifted_left = _shift_horizontally(left, disparity)
+            corr = jnp.mean(left * shifted_right, axis=-1, keepdims=True)
+            sad = jnp.mean(jnp.abs(left - shifted_right), axis=-1, keepdims=True)
+            reverse_corr = jnp.mean(right * shifted_left, axis=-1)
+            corr_maps.append(corr)
+            sad_maps.append(sad)
+            disparity_score_list.append(jnp.mean(corr, axis=(1, 2, 3)))
+            reverse_score_list.append(jnp.mean(reverse_corr, axis=(1, 2)))
+        disparity_scores = jnp.stack(disparity_score_list, axis=-1)
+        reverse_scores = jnp.stack(reverse_score_list, axis=-1)
+        best_lr = jnp.argmax(disparity_scores, axis=-1)
+        best_rl = jnp.argmax(reverse_scores, axis=-1)
+        consistency = jnp.mean(jnp.abs(best_lr - best_rl).astype(left.dtype))
+        volume = jnp.concatenate(corr_maps + sad_maps, axis=-1)
+        return volume, disparity_scores, consistency
+
+    def __call__(self, left_seq: jnp.ndarray, right_seq: jnp.ndarray):
+        _, batch, _, _, _ = left_seq.shape
+        state = self.lif.initial_state(batch)
+
+        def step(carry, x_t):
+            left_t, right_t = x_t
+            volume_t, disp_scores_t, consistency_t = self._cost_volume(left_t, right_t)
+            s_t, carry = self.lif(self.conv(volume_t), carry)
+            pooled = jnp.mean(s_t, axis=(1, 2))
+            logits_t = self.head(pooled)
+            disp_logits_t = self.volume_proj(disp_scores_t)
+            sr_t = jnp.mean(s_t)
+            return carry, (logits_t + disp_logits_t, sr_t, disp_scores_t, consistency_t)
+
+        _, (logits_seq, sr_seq, disparity_seq, consistency_seq) = hk.scan(step, state, (left_seq, right_seq))
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
+            "disparity_scores": jnp.mean(disparity_seq, axis=(0, 1)),
+            "left_right_consistency": jnp.mean(consistency_seq),
+        }
+
+
+@dataclass
 class MotionCompConfig:
     vision_cfg: ConvConfig
     imu_scale: float = 1.0
@@ -957,6 +1075,54 @@ class MotionCompensatedInputFrontEnd(hk.Module):
         x_comp = jax.vmap(shift_step, in_axes=(0, 0))(x_seq, shift_xy)
         logits, aux = self.encoder(x_comp)
         return logits, {"spike_rate": aux["spike_rate"], "x_comp": x_comp}
+
+
+@dataclass
+class HybridFilterConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    channels1: int
+    channels2: int
+    output_dim: int
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class HybridClassicalFilterSNN(hk.Module):
+    """Fixed classical filters feeding a trainable spiking encoder."""
+
+    def __init__(self, cfg: HybridFilterConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        h, w = cfg.input_hw
+        in_channels = cfg.input_channels + 3
+        self.fuse = hk.Conv2D(cfg.channels1, kernel_shape=1, padding="SAME")
+        self.conv = hk.Conv2D(cfg.channels2, kernel_shape=3, padding="SAME")
+        self.lif1 = snn.LIF((h, w, cfg.channels1), beta=cfg.beta, threshold=cfg.threshold)
+        self.lif2 = snn.LIF((h, w, cfg.channels2), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        state1 = self.lif1.initial_state(batch)
+        state2 = self.lif2.initial_state(batch)
+
+        def step(carry, x_t):
+            c1, c2 = carry
+            x_filt, energy = _classical_filter_bank(x_t)
+            s1, c1 = self.lif1(self.fuse(x_filt), c1)
+            s2, c2 = self.lif2(self.conv(s1), c2)
+            logits_t = self.head(jnp.mean(s2, axis=(1, 2)))
+            sr_t = jnp.stack([jnp.mean(s1), jnp.mean(s2)])
+            return (c1, c2), (logits_t, sr_t, energy)
+
+        _, (logits_seq, sr_seq, energy_seq) = hk.scan(step, (state1, state2), x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.mean(sr_seq, axis=0),
+            "filter_energy": jnp.mean(energy_seq, axis=0),
+        }
 
 
 @dataclass
@@ -1164,6 +1330,49 @@ class StructuredSparseSpikingCNN(hk.Module):
 
         _, (logits_seq, sr_seq) = hk.scan(step, (v1, v2), x_seq)
         return _readout(logits_seq, self.cfg.readout), {"logits_seq": logits_seq, "spike_rate": jnp.mean(sr_seq, axis=0)}
+
+
+@dataclass
+class EventDrivenPoolingConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    channels: int
+    output_dim: int
+    pool_modes: tuple[str, ...] = ("avg", "max", "l2")
+    event_threshold: float = 0.0
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class EventDrivenPoolingSNN(hk.Module):
+    """Spiking encoder with explicit event-conditioned pooling variants."""
+
+    def __init__(self, cfg: EventDrivenPoolingConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        h, w = cfg.input_hw
+        self.conv = hk.Conv2D(cfg.channels, kernel_shape=3, padding="SAME")
+        self.lif = snn.LIF((h, w, cfg.channels), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        state = self.lif.initial_state(batch)
+
+        def step(carry, x_t):
+            s_t, carry = self.lif(self.conv(x_t), carry)
+            pooled, active_ratio = _event_pool_features(s_t, self.cfg.event_threshold, self.cfg.pool_modes)
+            logits_t = self.head(pooled)
+            return carry, (logits_t, jnp.mean(s_t), active_ratio, pooled)
+
+        _, (logits_seq, sr_seq, ar_seq, pooled_seq) = hk.scan(step, state, x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
+            "active_ratio": jnp.mean(ar_seq),
+            "pooled_features": pooled_seq,
+        }
 
 
 @dataclass

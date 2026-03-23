@@ -354,6 +354,63 @@ def test_flow_and_stereo_branches_forward_shape():
     assert stereo_sr.shape == (1,)
 
 
+def test_stereo_disparity_correlation_snn_forward_shape_and_aux():
+    cfg = fm.StereoDisparityConfig(input_hw=(8, 8), input_channels=2, channels=5, output_dim=4, max_disparity=3)
+
+    def forward(left, right):
+        model = fm.StereoDisparityCorrelationSNN(cfg)
+        logits, aux = model(left, right)
+        return logits, aux["spike_rate"], aux["disparity_scores"], aux["left_right_consistency"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    left = jnp.ones((5, 2, 8, 8, 2), dtype=jnp.float32)
+    right = jnp.ones((5, 2, 8, 8, 2), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(29), left, right)
+    logits, spike_rate, disparity_scores, consistency = transformed.apply(params, left, right)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (1,)
+    assert disparity_scores.shape == (cfg.max_disparity + 1,)
+    assert jnp.asarray(consistency).shape == ()
+
+
+def test_hybrid_classical_filter_snn_forward_shape_and_filter_energy():
+    cfg = fm.HybridFilterConfig(input_hw=(8, 8), input_channels=2, channels1=4, channels2=6, output_dim=5)
+
+    def forward(x):
+        model = fm.HybridClassicalFilterSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["filter_energy"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((4, 2, 8, 8, 2), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(30), x)
+    logits, spike_rate, filter_energy = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (2,)
+    assert filter_energy.shape == (3,)
+
+
+def test_event_driven_pooling_snn_forward_shape_and_pool_features():
+    cfg = fm.EventDrivenPoolingConfig(input_hw=(8, 8), input_channels=2, channels=4, output_dim=3, event_threshold=0.0)
+
+    def forward(x):
+        model = fm.EventDrivenPoolingSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["active_ratio"], aux["pooled_features"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((4, 2, 8, 8, 2), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(31), x)
+    logits, spike_rate, active_ratio, pooled_features = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (1,)
+    assert jnp.asarray(active_ratio).shape == ()
+    assert pooled_features.shape == (4, 2, cfg.channels * len(cfg.pool_modes))
+
+
 def test_router_and_gaze_head_shapes():
     gaze_cfg = fm.GazeControlConfig(input_dim=6, imu_dim=3, traj_dim=4, num_regions=9)
 
