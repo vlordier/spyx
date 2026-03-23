@@ -47,6 +47,115 @@ Status is tracked against reference implementations in [src/spyx/fpga_models.py]
 - These are reference blocks intended for iterative experiments and hardware co-design sweeps, not final production/training recipes.
 - Some conceptual families in this document (for example strict log-polar transforms or graph-spherical connectivity) are represented by practical approximations in the current implementation set.
 
+## Implementation Coverage
+This section distinguishes between items that are implemented literally, items that are represented by practical approximations or compositions, and items that remain conceptual only.
+
+### Implemented Exactly
+These exist as concrete reference modules in `src/spyx/fpga_models.py` and are covered by `tests/test_fpga_models.py`.
+
+| Roadmap item | Spyx implementation |
+| --- | --- |
+| Plain feedforward LIF MLP | `LIFMLP` |
+| Small convolutional LIF SNN | `ConvLIFSNN` |
+| Ternary-weight LIF MLP | `TernaryLIFMLP` |
+| Ternary-weight conv LIF SNN | `TernaryConvLIFSNN` |
+| Sparse event-driven conv SNN | `SparseEventConvLIFSNN` |
+| Depthwise-separable conv SNN | `DepthwiseSeparableConvLIFSNN` |
+| Shallow residual spiking CNN | `ResidualShallowSpikingCNN` |
+| Multi-timescale LIF block | `MultiTimescaleLIFBlock` |
+| Tiny recurrent spiking block | `TinyRecurrentSpikingBlock` |
+| Hybrid SNN encoder + non-spiking head | `HybridSNNEncoderHead` |
+| k-WTA saliency gate | `KWTASaliencyGate` |
+| Time-surface encoding | `TimeSurfaceEncoder` |
+| IMU-conditioned visual SNN | `IMUConditionedVisualSNN` |
+| Visual-IMU recurrent fusion | `VisualIMURecurrentFusionBlock` |
+| Kalman-style fusion surrogate | `KalmanStyleSpikingFusionSurrogate` |
+| Spiking optical-flow branch | `SpikingOpticalFlowBranch` |
+| Motion-compensated input front-end | `MotionCompensatedInputFrontEnd` |
+| Region-activation router | `RegionActivationRouter` |
+| Trajectory-conditioned encoder | `TrajectoryConditionedSpikingEncoder` |
+| Predictive-coding block | `PredictiveCodingSNNBlock` |
+| Structured-sparse spiking CNN | `StructuredSparseSpikingCNN` |
+| Early-exit / anytime head | `EarlyExitAnytimeSNN` |
+
+### Implemented as Approximation or Composition
+These are present in practical form, but not as literal one-to-one realizations of the roadmap phrase.
+
+| Roadmap concept | Current state |
+| --- | --- |
+| Foveated dual-path / multi-scale SNN | Implemented as `FoveatedDualPathSNN` |
+| Stereo correlation / disparity family | Proxy only via `StereoCoincidenceSNN`, not a full disparity-cost family |
+| Collision-risk head + navigation-value head | Implemented as `CollisionNavigationMultiHead`, not a fully spiking integrated family |
+| Gaze-control policy head | Implemented as `GazeControlPolicyHead`, but not a full gaze-control SNN family |
+| WTA-driven foveation | Achievable by composing `KWTASaliencyGate`, `RegionActivationRouter`, and `FoveatedDualPathSNN` |
+| Time-surface + foveated SNN | Achievable by composing `TimeSurfaceEncoder` with `FoveatedDualPathSNN` |
+| Motion-compensated foveated SNN | Achievable by composing `MotionCompensatedInputFrontEnd` with foveated modules |
+| Event-driven sparse foveated SNN | Achievable by combining sparse conv and foveated modules, not a dedicated class |
+| Ternary saliency-router stack | Represented by ternary, sparse, gating, and routing pieces rather than one named stack |
+
+### Still Conceptual Only
+These are described in the roadmap but do not yet have dedicated implementations in the current Spyx reference set.
+
+| Roadmap concept | Status |
+| --- | --- |
+| Strict log-polar convolutional SNN | Not implemented |
+| Spherical-geometry spike-routing graph | Not implemented |
+| Spherical harmonic / frequency-domain SNN | Not implemented |
+| Small liquid state machine | Not implemented |
+| Event-driven pooling variants as dedicated architecture family | Not implemented as dedicated modules |
+| Tiny spiking autoencoder | Not implemented |
+| Hybrid SNN + classical filters pipeline | Not implemented as a named module |
+| Delay-based SNN | Not implemented |
+| Population coding as dedicated architecture family | Not implemented as a model family |
+| Spike-frequency vs time-to-first-spike coding family | Not implemented as dedicated variants |
+| Stereo foveated correlation family with disparity bins / left-right consistency | Not implemented literally |
+| Hard-gated mixture-of-experts family | Not implemented |
+| Frequency-domain or graph-based spherical models | Not implemented |
+
+## Gap Priority
+This table focuses on the remaining gaps and ranks them by implementation value rather than novelty.
+
+### Implement Next
+| Item | Current state in Spyx | Effort | Why next |
+| --- | --- | --- | --- |
+| Log-polar / strict foveated conv SNN | Not implemented exactly; only dual-path approximation exists | Medium | Highest-value missing geometry-aware backbone |
+| Stereo disparity / correlation family | Only proxy `StereoCoincidenceSNN` exists | Medium | Depth is core to the target stack |
+| Event-driven pooling variants | Not a dedicated architecture module | Low | Useful primitive, low risk |
+| Hybrid SNN + classical filters | Not implemented | Low | High practical value and FPGA fit |
+| Tiny spiking autoencoder | Not implemented | Low-Medium | Useful for latent compression studies |
+| Population coding variant | Not implemented as a model family | Low | Small change with robustness value |
+
+### Implement Later
+| Item | Current state in Spyx | Effort | Why later |
+| --- | --- | --- | --- |
+| Time-to-first-spike / latency coding variants | Not implemented as dedicated variants | Medium | Better after baseline heads are benchmarked |
+| Fully integrated WTA-driven foveation stack | Pieces exist, integrated stack does not | Medium | Better once stricter foveation exists |
+| Fully spiking collision/navigation multi-head family | Current multi-head is practical, not full family | Medium | Current implementation is enough for baselines |
+| Hard-gated mixture-of-experts family | Not implemented | Medium-High | Strong ternary upside, but routing complexity is high |
+| Event-driven sparse foveated SNN as dedicated class | Achievable by composition, not explicit | Medium | Better after strict foveation exists |
+
+### Defer
+| Item | Current state in Spyx | Effort | Why defer |
+| --- | --- | --- | --- |
+| Delay-based SNN | Not implemented | High | Hardware pain, weak early ROI |
+| Small liquid state machine | Not implemented | Medium | Less aligned with hardware-transfer goals |
+| Spherical-geometry spike-routing graph | Not implemented | High | Too bespoke too early |
+| Spherical harmonic / frequency-domain SNN | Not implemented | High | Research-heavy, weak short-term payoff |
+| Strict graph-based spherical model family | Not implemented | High | Same issue as above |
+| Bio-detailed neurons, transformers, STDP-heavy models | Not implemented | High | Explicitly deprioritized by this roadmap |
+
+### Recommended Order to Close Gaps
+1. Log-polar / strict foveated conv SNN.
+2. Stereo disparity / correlation family.
+3. Hybrid SNN + classical filters.
+4. Event-driven pooling variants.
+5. Tiny spiking autoencoder.
+6. Population coding variant.
+7. Time-to-first-spike / latency-coded heads.
+8. Integrated WTA-driven foveation stack.
+9. Hard-gated mixture-of-experts.
+10. Delay-based, spherical-graph, and frequency-domain ideas only after the above.
+
 ## System Context
 Primary context:
 - Stereo and pseudo-event vision for drone navigation.
