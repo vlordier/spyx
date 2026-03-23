@@ -49,11 +49,15 @@ Status is tracked against reference implementations in [src/spyx/fpga_models.py]
 - [x] Tiny spiking autoencoder -> `TinySpikingAutoencoder`
 - [x] Population coding variant -> `PopulationCodedLIFMLP`
 - [x] Time-to-first-spike / latency-coded heads -> `LatencyCodedSpikingHead`
+- [x] Spike-frequency coding family -> `SpikeFrequencyCodedSNN`
 - [x] Hard-gated mixture-of-experts family -> `HardGatedMixtureOfExpertsSNN`
 - [x] Spherical-geometry spike-routing graph -> `SphericalRoutingGraphSNN`
+- [x] Strict graph-based spherical model family -> `StrictGraphSphericalSNN`
 - [x] Spherical harmonic / frequency-domain SNN (proxy) -> `SphericalFrequencyDomainSNN`
 - [x] Small liquid state machine -> `SmallLiquidStateMachineSNN`
 - [x] Delay-based SNN -> `DelayBasedSpikingSNN`
+- [x] Tiny spiking transformer family -> `TinySpikingTransformerSNN`
+- [x] Bio-detailed STDP-heavy family -> `BioDetailedSTDPSNN`
 - [x] Structured-sparse spiking CNN -> `StructuredSparseSpikingCNN`
 - [x] Event-driven pooling variants -> `EventDrivenPoolingSNN`
 - [x] Early-exit/anytime inference head -> `EarlyExitAnytimeSNN`
@@ -98,11 +102,15 @@ These exist as concrete reference modules in `src/spyx/fpga_models.py` and are c
 | Tiny spiking autoencoder | `TinySpikingAutoencoder` |
 | Population coding variant | `PopulationCodedLIFMLP` |
 | Time-to-first-spike / latency-coded heads | `LatencyCodedSpikingHead` |
+| Spike-frequency coding family | `SpikeFrequencyCodedSNN` |
 | Hard-gated mixture-of-experts family | `HardGatedMixtureOfExpertsSNN` |
 | Spherical-geometry spike-routing graph | `SphericalRoutingGraphSNN` |
+| Strict graph-based spherical model family | `StrictGraphSphericalSNN` |
 | Spherical harmonic / frequency-domain SNN (proxy) | `SphericalFrequencyDomainSNN` |
 | Small liquid state machine | `SmallLiquidStateMachineSNN` |
 | Delay-based SNN | `DelayBasedSpikingSNN` |
+| Tiny spiking transformer family | `TinySpikingTransformerSNN` |
+| Bio-detailed STDP-heavy family | `BioDetailedSTDPSNN` |
 | Structured-sparse spiking CNN | `StructuredSparseSpikingCNN` |
 | Event-driven pooling variants | `EventDrivenPoolingSNN` |
 | Early-exit / anytime head | `EarlyExitAnytimeSNN` |
@@ -123,9 +131,8 @@ These are described in the roadmap but do not yet have dedicated implementations
 
 | Roadmap concept | Status |
 | --- | --- |
-| Spike-frequency coding family | Not implemented as dedicated variants |
 | Stereo foveated correlation family with disparity bins / left-right consistency | Partially implemented via `StereoDisparityCorrelationSNN`; not yet foveated |
-| Frequency-domain or graph-based spherical models | Not implemented |
+| Frequency-domain or graph-based spherical scaling beyond current proxies | Not implemented |
 
 ## Gap Priority
 This table focuses on the remaining gaps and ranks them by implementation value rather than novelty.
@@ -141,13 +148,13 @@ No medium-priority practical gaps remain; only deferred research-heavy families 
 ### Defer
 | Item | Current state in Spyx | Effort | Why defer |
 | --- | --- | --- | --- |
-| Strict graph-based spherical model family | Not implemented | High | Same issue as above |
-| Bio-detailed neurons, transformers, STDP-heavy models | Not implemented | High | Explicitly deprioritized by this roadmap |
+| Full spherical scaling family beyond strict/proxy references | Not implemented | High | Requires bespoke kernels and memory layout redesign |
+| Large-scale bio-detailed / transformer / STDP systems | Not implemented | High | Training and hardware complexity remain high |
 
 ### Recommended Order to Close Gaps
-1. Spike-frequency coding family.
-2. Strict graph-based spherical model family.
-3. Bio-detailed neurons, transformers, and STDP-heavy models only for long-horizon research.
+1. Stereo-foveated correlation family with disparity bins and consistency constraints.
+2. Full spherical scaling family beyond strict/proxy references.
+3. Large-scale bio-detailed / transformer / STDP systems only for long-horizon research.
 
 ## System Context
 Primary context:

@@ -584,6 +584,79 @@ def test_delay_based_spiking_snn_forward_shape_and_delay_profile():
     assert delay_profile.shape == (cfg.max_delay,)
 
 
+def test_spike_frequency_coded_snn_forward_shape_and_frequency_profile():
+    cfg = fm.SpikeFrequencyCodingConfig(input_dim=9, hidden_dim=8, output_dim=4, max_frequency=6)
+
+    def forward(x):
+        model = fm.SpikeFrequencyCodedSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["frequency_profile"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.arange(5 * 2 * cfg.input_dim, dtype=jnp.float32).reshape((5, 2, cfg.input_dim))
+    params = transformed.init(jax.random.PRNGKey(43), x)
+    logits, spike_rate, frequency_profile = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (1,)
+    assert frequency_profile.shape == (cfg.input_dim,)
+
+
+def test_strict_graph_spherical_snn_forward_shape_and_smoothness():
+    cfg = fm.StrictGraphSphericalConfig(input_hw=(8, 8), input_channels=2, hidden_dim=6, output_dim=4)
+
+    def forward(x):
+        model = fm.StrictGraphSphericalSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["graph_smoothness"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((4, 2, 8, 8, 2), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(44), x)
+    logits, spike_rate, smoothness = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (1,)
+    assert jnp.asarray(smoothness).shape == ()
+
+
+def test_tiny_spiking_transformer_snn_forward_shape_and_attention_entropy():
+    cfg = fm.TinySpikingTransformerConfig(input_dim=10, model_dim=12, output_dim=5, num_heads=2)
+
+    def forward(x):
+        model = fm.TinySpikingTransformerSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["attention_entropy"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((5, 2, cfg.input_dim), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(45), x)
+    logits, spike_rate, attn_entropy = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (1,)
+    assert jnp.asarray(attn_entropy).shape == ()
+
+
+def test_bio_detailed_stdp_snn_forward_shape_and_plasticity_aux():
+    cfg = fm.BioDetailedSTDPConfig(input_dim=10, hidden_dim=8, output_dim=4)
+
+    def forward(x):
+        model = fm.BioDetailedSTDPSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["stdp_signal"], aux["adaptive_threshold"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((5, 2, cfg.input_dim), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(46), x)
+    logits, spike_rate, stdp_signal, adaptive_threshold = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (1,)
+    assert jnp.asarray(stdp_signal).shape == ()
+    assert jnp.asarray(adaptive_threshold).shape == ()
+
+
 def test_tiny_spiking_autoencoder_forward_shape_and_aux():
     cfg = fm.TinySpikingAutoencoderConfig(input_dim=10, hidden_dim=8, latent_dim=4)
 

@@ -1171,6 +1171,228 @@ class DelayBasedSpikingSNN(hk.Module):
             "delay_profile": delay_weights,
         }
 
+@dataclass
+class SpikeFrequencyCodingConfig:
+    input_dim: int
+    hidden_dim: int
+    output_dim: int
+    max_frequency: int = 6
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class SpikeFrequencyCodedSNN(hk.Module):
+    """Spike-frequency coding variant with periodic pulse generation."""
+
+    def __init__(self, cfg: SpikeFrequencyCodingConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.hidden = hk.Linear(cfg.hidden_dim)
+        self.lif = snn.LIF((cfg.hidden_dim,), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def _frequency_code(self, x_seq: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+        steps = x_seq.shape[0]
+        static_x = jnp.mean(x_seq, axis=0)
+        x_norm = _normalize_unit_interval(static_x)
+        max_f = max(self.cfg.max_frequency, 1)
+        freq = 1 + jnp.floor(x_norm * (max_f - 1)).astype(jnp.int32)
+        period = jnp.maximum(1, max_f - freq + 1)
+        t = jnp.arange(steps, dtype=jnp.int32)[:, None, None]
+        code = (jnp.mod(t, period[None, :, :]) == 0).astype(x_seq.dtype)
+        return code, freq.astype(x_seq.dtype)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _ = x_seq.shape
+        state = self.lif.initial_state(batch)
+        coded_seq, freq_profile = self._frequency_code(x_seq)
+
+        def step(carry, x_t):
+            s_t, carry = self.lif(self.hidden(x_t), carry)
+            logits_t = self.head(s_t)
+            return carry, (logits_t, jnp.mean(s_t))
+
+        _, (logits_seq, sr_seq) = hk.scan(step, state, coded_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
+            "frequency_profile": jnp.mean(freq_profile, axis=0),
+        }
+
+
+@dataclass
+class StrictGraphSphericalConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    hidden_dim: int
+    output_dim: int
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+def _spherical_adjacency_matrix(height: int, width: int) -> jnp.ndarray:
+    nodes = height * width
+    adj = jnp.zeros((nodes, nodes), dtype=jnp.float32)
+    neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    for y in range(height):
+        for x in range(width):
+            src = y * width + x
+            adj = adj.at[src, src].set(1.0)
+            for dy, dx in neighbors:
+                ny = (y + dy) % height
+                nx = (x + dx) % width
+                dst = ny * width + nx
+                adj = adj.at[src, dst].set(1.0)
+    denom = jnp.maximum(jnp.sum(adj, axis=-1, keepdims=True), 1.0)
+    return adj / denom
+
+
+class StrictGraphSphericalSNN(hk.Module):
+    """Strict graph-based spherical model with explicit node adjacency aggregation."""
+
+    def __init__(self, cfg: StrictGraphSphericalConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        h, w = cfg.input_hw
+        self.adj = _spherical_adjacency_matrix(h, w)
+        self.proj = hk.Conv2D(cfg.hidden_dim, kernel_shape=1, padding="SAME")
+        self.lif = snn.LIF((h, w, cfg.hidden_dim), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def _aggregate(self, x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+        b, h, w, c = x.shape
+        flat = x.reshape(b, h * w, c)
+        agg = jnp.einsum("nm,bmc->bnc", self.adj, flat)
+        smooth = jnp.mean(jnp.abs(agg - flat))
+        return agg.reshape(b, h, w, c), smooth
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        state = self.lif.initial_state(batch)
+
+        def step(carry, x_t):
+            z_t = self.proj(x_t)
+            z_g, smooth_t = self._aggregate(z_t)
+            s_t, carry = self.lif(z_g, carry)
+            logits_t = self.head(jnp.mean(s_t, axis=(1, 2)))
+            return carry, (logits_t, jnp.mean(s_t), smooth_t)
+
+        _, (logits_seq, sr_seq, smooth_seq) = hk.scan(step, state, x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
+            "graph_smoothness": jnp.mean(smooth_seq),
+        }
+
+
+@dataclass
+class TinySpikingTransformerConfig:
+    input_dim: int
+    model_dim: int
+    output_dim: int
+    num_heads: int = 2
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class TinySpikingTransformerSNN(hk.Module):
+    """Tiny transformer-style temporal attention feeding a spiking readout."""
+
+    def __init__(self, cfg: TinySpikingTransformerConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.q_proj = hk.Linear(cfg.model_dim)
+        self.k_proj = hk.Linear(cfg.model_dim)
+        self.v_proj = hk.Linear(cfg.model_dim)
+        self.o_proj = hk.Linear(cfg.model_dim)
+        self.spike_proj = hk.Linear(cfg.model_dim)
+        self.lif = snn.LIF((cfg.model_dim,), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        t, batch, _ = x_seq.shape
+        x_bt = jnp.swapaxes(x_seq, 0, 1)
+        q = self.q_proj(x_bt)
+        k = self.k_proj(x_bt)
+        v = self.v_proj(x_bt)
+        scale = 1.0 / jnp.sqrt(jnp.asarray(self.cfg.model_dim, dtype=x_seq.dtype))
+        scores = jnp.einsum("btd,bsd->bts", q, k) * scale
+        attn = jax.nn.softmax(scores, axis=-1)
+        ctx = jnp.einsum("bts,bsd->btd", attn, v)
+        ctx = self.o_proj(ctx)
+        ctx_seq = jnp.swapaxes(ctx, 0, 1)
+
+        state = self.lif.initial_state(batch)
+
+        def step(carry, x_t):
+            s_t, carry = self.lif(self.spike_proj(x_t), carry)
+            logits_t = self.head(s_t)
+            return carry, (logits_t, jnp.mean(s_t))
+
+        _, (logits_seq, sr_seq) = hk.scan(step, state, ctx_seq)
+        attn_entropy = -jnp.mean(jnp.sum(attn * jnp.log(jnp.maximum(attn, 1e-8)), axis=-1))
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
+            "attention_entropy": attn_entropy,
+        }
+
+
+@dataclass
+class BioDetailedSTDPConfig:
+    input_dim: int
+    hidden_dim: int
+    output_dim: int
+    stdp_lr: float = 0.05
+    adapt_rate: float = 0.02
+    target_rate: float = 0.1
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class BioDetailedSTDPSNN(hk.Module):
+    """Bio-inspired adaptive-threshold spiking block with STDP-like trace dynamics."""
+
+    def __init__(self, cfg: BioDetailedSTDPConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.in_proj = hk.Linear(cfg.hidden_dim)
+        self.post_proj = hk.Linear(cfg.hidden_dim)
+        self.lif = snn.LIF((cfg.hidden_dim,), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _ = x_seq.shape
+        state = self.lif.initial_state(batch)
+        pre_trace = jnp.zeros((batch, self.cfg.hidden_dim), dtype=x_seq.dtype)
+        post_trace = jnp.zeros((batch, self.cfg.hidden_dim), dtype=x_seq.dtype)
+        adapt_th = jnp.zeros((batch, self.cfg.hidden_dim), dtype=x_seq.dtype)
+
+        def step(carry, x_t):
+            c_state, c_pre, c_post, c_th = carry
+            pre = self.in_proj(x_t)
+            drive = pre - c_th
+            s_t, c_state = self.lif(drive, c_state)
+            c_pre = 0.95 * c_pre + 0.05 * pre
+            c_post = 0.95 * c_post + 0.05 * self.post_proj(s_t)
+            stdp_signal = jnp.mean(c_pre * c_post)
+            spike_rate = jnp.mean(s_t, axis=-1, keepdims=True)
+            c_th = 0.95 * c_th + self.cfg.adapt_rate * (spike_rate - self.cfg.target_rate)
+            logits_t = self.head(s_t) + self.cfg.stdp_lr * stdp_signal
+            return (c_state, c_pre, c_post, c_th), (logits_t, jnp.mean(s_t), stdp_signal, jnp.mean(c_th))
+
+        _, (logits_seq, sr_seq, stdp_seq, th_seq) = hk.scan(step, (state, pre_trace, post_trace, adapt_th), x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
+            "stdp_signal": jnp.mean(stdp_seq),
+            "adaptive_threshold": jnp.mean(th_seq),
+        }
+
 
 @dataclass
 class IMUConditionedConfig:
