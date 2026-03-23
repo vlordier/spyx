@@ -983,6 +983,196 @@ class EventDrivenSparseFoveatedSNN(hk.Module):
 
 
 @dataclass
+class SphericalRoutingGraphConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    hidden_dim: int
+    output_dim: int
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class SphericalRoutingGraphSNN(hk.Module):
+    """Spherical-neighborhood spike-routing proxy using wrapped local graph aggregation."""
+
+    def __init__(self, cfg: SphericalRoutingGraphConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        h, w = cfg.input_hw
+        self.proj = hk.Conv2D(cfg.hidden_dim, kernel_shape=1, padding="SAME")
+        self.lif = snn.LIF((h, w, cfg.hidden_dim), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def _graph_aggregate(self, x: jnp.ndarray) -> jnp.ndarray:
+        up = jnp.roll(x, shift=-1, axis=1)
+        down = jnp.roll(x, shift=1, axis=1)
+        left = jnp.roll(x, shift=-1, axis=2)
+        right = jnp.roll(x, shift=1, axis=2)
+        return (x + up + down + left + right) / 5.0
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        state = self.lif.initial_state(batch)
+
+        def step(carry, x_t):
+            x_g = self._graph_aggregate(x_t)
+            s_t, carry = self.lif(self.proj(x_g), carry)
+            logits_t = self.head(jnp.mean(s_t, axis=(1, 2)))
+            return carry, (logits_t, jnp.mean(s_t), jnp.mean(jnp.abs(x_g - x_t)))
+
+        _, (logits_seq, sr_seq, route_seq) = hk.scan(step, state, x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
+            "route_delta": jnp.mean(route_seq),
+        }
+
+
+@dataclass
+class SphericalFrequencyConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    channels: int
+    output_dim: int
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class SphericalFrequencyDomainSNN(hk.Module):
+    """Frequency-domain spherical proxy branch feeding a spiking decoder."""
+
+    def __init__(self, cfg: SphericalFrequencyConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        h, w = cfg.input_hw
+        self.conv = hk.Conv2D(cfg.channels, kernel_shape=3, padding="SAME")
+        self.lif = snn.LIF((h, w, cfg.channels), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def _frequency_features(self, x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+        gray = jnp.mean(x, axis=-1)
+        spec = jnp.fft.rfft2(gray, axes=(1, 2))
+        mag = jnp.log1p(jnp.abs(spec))
+        mag = mag[..., None]
+        mag_up = jax.image.resize(mag, (x.shape[0], x.shape[1], x.shape[2], 1), method="linear")
+        spectral_energy = jnp.mean(mag)
+        return jnp.concatenate([x, mag_up], axis=-1), spectral_energy
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        state = self.lif.initial_state(batch)
+
+        def step(carry, x_t):
+            x_f, e_t = self._frequency_features(x_t)
+            s_t, carry = self.lif(self.conv(x_f), carry)
+            logits_t = self.head(jnp.mean(s_t, axis=(1, 2)))
+            return carry, (logits_t, jnp.mean(s_t), e_t)
+
+        _, (logits_seq, sr_seq, energy_seq) = hk.scan(step, state, x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
+            "spectral_energy": jnp.mean(energy_seq),
+        }
+
+
+@dataclass
+class SmallLiquidStateMachineConfig:
+    input_dim: int
+    reservoir_dim: int
+    output_dim: int
+    recurrent_sparsity: float = 0.8
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class SmallLiquidStateMachineSNN(hk.Module):
+    """Small liquid-state-machine style spiking reservoir block."""
+
+    def __init__(self, cfg: SmallLiquidStateMachineConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.in_proj = hk.Linear(cfg.reservoir_dim)
+        self.reservoir_lif = snn.LIF((cfg.reservoir_dim,), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _ = x_seq.shape
+        state = self.reservoir_lif.initial_state(batch)
+        prev_spike = jnp.zeros((batch, self.cfg.reservoir_dim), dtype=x_seq.dtype)
+        w_rec = hk.get_parameter(
+            "w_rec",
+            (self.cfg.reservoir_dim, self.cfg.reservoir_dim),
+            init=hk.initializers.VarianceScaling(1.0, "fan_avg", "uniform"),
+        )
+        scores = jnp.abs(w_rec).reshape(-1)
+        keep = max(1, int(scores.shape[0] * (1.0 - self.cfg.recurrent_sparsity)))
+        mask = _topk_mask(scores[None, :], keep).reshape(w_rec.shape)
+        w_eff = w_rec * mask
+
+        def step(carry, x_t):
+            c_state, c_prev = carry
+            recurrent_drive = c_prev @ w_eff
+            s_t, c_state = self.reservoir_lif(self.in_proj(x_t) + recurrent_drive, c_state)
+            logits_t = self.head(s_t)
+            return (c_state, s_t), (logits_t, jnp.mean(s_t))
+
+        _, (logits_seq, sr_seq) = hk.scan(step, (state, prev_spike), x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
+            "recurrent_active_ratio": jnp.mean(mask),
+        }
+
+
+@dataclass
+class DelayBasedConfig:
+    input_dim: int
+    hidden_dim: int
+    output_dim: int
+    max_delay: int = 4
+    beta: float = 0.9
+    threshold: float = 1.0
+    readout: str = "mean"
+
+
+class DelayBasedSpikingSNN(hk.Module):
+    """Delay-line driven spiking block with learnable delay mixture."""
+
+    def __init__(self, cfg: DelayBasedConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.hidden = hk.Linear(cfg.hidden_dim)
+        self.lif = snn.LIF((cfg.hidden_dim,), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _ = x_seq.shape
+        state = self.lif.initial_state(batch)
+        delay_buf = jnp.zeros((self.cfg.max_delay, batch, self.cfg.input_dim), dtype=x_seq.dtype)
+        delay_logits = hk.get_parameter("delay_logits", (self.cfg.max_delay,), init=jnp.zeros)
+        delay_weights = jax.nn.softmax(delay_logits)
+
+        def step(carry, x_t):
+            c_state, c_buf = carry
+            c_buf = jnp.concatenate([x_t[None, ...], c_buf[:-1]], axis=0)
+            delayed = jnp.tensordot(delay_weights, c_buf, axes=([0], [0]))
+            s_t, c_state = self.lif(self.hidden(delayed), c_state)
+            logits_t = self.head(s_t)
+            return (c_state, c_buf), (logits_t, jnp.mean(s_t))
+
+        _, (logits_seq, sr_seq) = hk.scan(step, (state, delay_buf), x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.asarray([jnp.mean(sr_seq)]),
+            "delay_profile": delay_weights,
+        }
+
+
+@dataclass
 class IMUConditionedConfig:
     vision_cfg: ConvConfig
     imu_dim: int

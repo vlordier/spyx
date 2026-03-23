@@ -50,6 +50,10 @@ Status is tracked against reference implementations in [src/spyx/fpga_models.py]
 - [x] Population coding variant -> `PopulationCodedLIFMLP`
 - [x] Time-to-first-spike / latency-coded heads -> `LatencyCodedSpikingHead`
 - [x] Hard-gated mixture-of-experts family -> `HardGatedMixtureOfExpertsSNN`
+- [x] Spherical-geometry spike-routing graph -> `SphericalRoutingGraphSNN`
+- [x] Spherical harmonic / frequency-domain SNN (proxy) -> `SphericalFrequencyDomainSNN`
+- [x] Small liquid state machine -> `SmallLiquidStateMachineSNN`
+- [x] Delay-based SNN -> `DelayBasedSpikingSNN`
 - [x] Structured-sparse spiking CNN -> `StructuredSparseSpikingCNN`
 - [x] Event-driven pooling variants -> `EventDrivenPoolingSNN`
 - [x] Early-exit/anytime inference head -> `EarlyExitAnytimeSNN`
@@ -95,6 +99,10 @@ These exist as concrete reference modules in `src/spyx/fpga_models.py` and are c
 | Population coding variant | `PopulationCodedLIFMLP` |
 | Time-to-first-spike / latency-coded heads | `LatencyCodedSpikingHead` |
 | Hard-gated mixture-of-experts family | `HardGatedMixtureOfExpertsSNN` |
+| Spherical-geometry spike-routing graph | `SphericalRoutingGraphSNN` |
+| Spherical harmonic / frequency-domain SNN (proxy) | `SphericalFrequencyDomainSNN` |
+| Small liquid state machine | `SmallLiquidStateMachineSNN` |
+| Delay-based SNN | `DelayBasedSpikingSNN` |
 | Structured-sparse spiking CNN | `StructuredSparseSpikingCNN` |
 | Event-driven pooling variants | `EventDrivenPoolingSNN` |
 | Early-exit / anytime head | `EarlyExitAnytimeSNN` |
@@ -115,10 +123,6 @@ These are described in the roadmap but do not yet have dedicated implementations
 
 | Roadmap concept | Status |
 | --- | --- |
-| Spherical-geometry spike-routing graph | Not implemented |
-| Spherical harmonic / frequency-domain SNN | Not implemented |
-| Small liquid state machine | Not implemented |
-| Delay-based SNN | Not implemented |
 | Spike-frequency coding family | Not implemented as dedicated variants |
 | Stereo foveated correlation family with disparity bins / left-right consistency | Partially implemented via `StereoDisparityCorrelationSNN`; not yet foveated |
 | Frequency-domain or graph-based spherical models | Not implemented |
@@ -137,15 +141,13 @@ No medium-priority practical gaps remain; only deferred research-heavy families 
 ### Defer
 | Item | Current state in Spyx | Effort | Why defer |
 | --- | --- | --- | --- |
-| Delay-based SNN | Not implemented | High | Hardware pain, weak early ROI |
-| Small liquid state machine | Not implemented | Medium | Less aligned with hardware-transfer goals |
-| Spherical-geometry spike-routing graph | Not implemented | High | Too bespoke too early |
-| Spherical harmonic / frequency-domain SNN | Not implemented | High | Research-heavy, weak short-term payoff |
 | Strict graph-based spherical model family | Not implemented | High | Same issue as above |
 | Bio-detailed neurons, transformers, STDP-heavy models | Not implemented | High | Explicitly deprioritized by this roadmap |
 
 ### Recommended Order to Close Gaps
-1. Delay-based, spherical-graph, and frequency-domain ideas only after core deployment milestones.
+1. Spike-frequency coding family.
+2. Strict graph-based spherical model family.
+3. Bio-detailed neurons, transformers, and STDP-heavy models only for long-horizon research.
 
 ## System Context
 Primary context:

@@ -512,6 +512,78 @@ def test_event_driven_sparse_foveated_snn_forward_shape_and_sparse_aux():
     assert channel_gate.shape == (cfg.channels_fovea,)
 
 
+def test_spherical_routing_graph_snn_forward_shape_and_route_aux():
+    cfg = fm.SphericalRoutingGraphConfig(input_hw=(8, 8), input_channels=2, hidden_dim=6, output_dim=4)
+
+    def forward(x):
+        model = fm.SphericalRoutingGraphSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["route_delta"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((4, 2, 8, 8, 2), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(39), x)
+    logits, spike_rate, route_delta = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (1,)
+    assert jnp.asarray(route_delta).shape == ()
+
+
+def test_spherical_frequency_domain_snn_forward_shape_and_energy():
+    cfg = fm.SphericalFrequencyConfig(input_hw=(8, 8), input_channels=2, channels=5, output_dim=4)
+
+    def forward(x):
+        model = fm.SphericalFrequencyDomainSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["spectral_energy"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((4, 2, 8, 8, 2), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(40), x)
+    logits, spike_rate, spectral_energy = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (1,)
+    assert jnp.asarray(spectral_energy).shape == ()
+
+
+def test_small_liquid_state_machine_snn_forward_shape_and_recurrent_ratio():
+    cfg = fm.SmallLiquidStateMachineConfig(input_dim=10, reservoir_dim=12, output_dim=4, recurrent_sparsity=0.7)
+
+    def forward(x):
+        model = fm.SmallLiquidStateMachineSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["recurrent_active_ratio"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((5, 2, cfg.input_dim), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(41), x)
+    logits, spike_rate, recurrent_ratio = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (1,)
+    assert jnp.asarray(recurrent_ratio).shape == ()
+
+
+def test_delay_based_spiking_snn_forward_shape_and_delay_profile():
+    cfg = fm.DelayBasedConfig(input_dim=9, hidden_dim=8, output_dim=3, max_delay=4)
+
+    def forward(x):
+        model = fm.DelayBasedSpikingSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["delay_profile"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.ones((5, 2, cfg.input_dim), dtype=jnp.float32)
+    params = transformed.init(jax.random.PRNGKey(42), x)
+    logits, spike_rate, delay_profile = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (1,)
+    assert delay_profile.shape == (cfg.max_delay,)
+
+
 def test_tiny_spiking_autoencoder_forward_shape_and_aux():
     cfg = fm.TinySpikingAutoencoderConfig(input_dim=10, hidden_dim=8, latent_dim=4)
 
