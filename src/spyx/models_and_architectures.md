@@ -28,6 +28,7 @@ Status is tracked against reference implementations in [src/spyx/fpga_models.py]
 ### Foveated, fusion, routing, and motion modules
 - [x] k-WTA saliency gate -> `KWTASaliencyGate`
 - [x] Time-surface encoding -> `TimeSurfaceEncoder`
+- [x] Strict log-polar convolutional SNN -> `LogPolarFoveatedConvSNN`
 - [x] Foveated dual-path SNN -> `FoveatedDualPathSNN`
 - [x] IMU-conditioned visual SNN -> `IMUConditionedVisualSNN`
 - [x] Visual-IMU recurrent fusion -> `VisualIMURecurrentFusionBlock`
@@ -67,6 +68,7 @@ These exist as concrete reference modules in `src/spyx/fpga_models.py` and are c
 | Hybrid SNN encoder + non-spiking head | `HybridSNNEncoderHead` |
 | k-WTA saliency gate | `KWTASaliencyGate` |
 | Time-surface encoding | `TimeSurfaceEncoder` |
+| Strict log-polar convolutional SNN | `LogPolarFoveatedConvSNN` |
 | IMU-conditioned visual SNN | `IMUConditionedVisualSNN` |
 | Visual-IMU recurrent fusion | `VisualIMURecurrentFusionBlock` |
 | Kalman-style fusion surrogate | `KalmanStyleSpikingFusionSurrogate` |
@@ -98,7 +100,6 @@ These are described in the roadmap but do not yet have dedicated implementations
 
 | Roadmap concept | Status |
 | --- | --- |
-| Strict log-polar convolutional SNN | Not implemented |
 | Spherical-geometry spike-routing graph | Not implemented |
 | Spherical harmonic / frequency-domain SNN | Not implemented |
 | Small liquid state machine | Not implemented |
@@ -118,7 +119,6 @@ This table focuses on the remaining gaps and ranks them by implementation value 
 ### Implement Next
 | Item | Current state in Spyx | Effort | Why next |
 | --- | --- | --- | --- |
-| Log-polar / strict foveated conv SNN | Not implemented exactly; only dual-path approximation exists | Medium | Highest-value missing geometry-aware backbone |
 | Stereo disparity / correlation family | Only proxy `StereoCoincidenceSNN` exists | Medium | Depth is core to the target stack |
 | Event-driven pooling variants | Not a dedicated architecture module | Low | Useful primitive, low risk |
 | Hybrid SNN + classical filters | Not implemented | Low | High practical value and FPGA fit |
@@ -145,16 +145,15 @@ This table focuses on the remaining gaps and ranks them by implementation value 
 | Bio-detailed neurons, transformers, STDP-heavy models | Not implemented | High | Explicitly deprioritized by this roadmap |
 
 ### Recommended Order to Close Gaps
-1. Log-polar / strict foveated conv SNN.
-2. Stereo disparity / correlation family.
-3. Hybrid SNN + classical filters.
-4. Event-driven pooling variants.
-5. Tiny spiking autoencoder.
-6. Population coding variant.
-7. Time-to-first-spike / latency-coded heads.
-8. Integrated WTA-driven foveation stack.
-9. Hard-gated mixture-of-experts.
-10. Delay-based, spherical-graph, and frequency-domain ideas only after the above.
+1. Stereo disparity / correlation family.
+2. Hybrid SNN + classical filters.
+3. Event-driven pooling variants.
+4. Tiny spiking autoencoder.
+5. Population coding variant.
+6. Time-to-first-spike / latency-coded heads.
+7. Integrated WTA-driven foveation stack.
+8. Hard-gated mixture-of-experts.
+9. Delay-based, spherical-graph, and frequency-domain ideas only after the above.
 
 ## System Context
 Primary context:

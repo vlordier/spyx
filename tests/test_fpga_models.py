@@ -258,6 +258,35 @@ def test_foveated_dual_path_snn_forward_shape():
     assert spike_rate.shape == (2,)
 
 
+def test_logpolar_foveated_conv_snn_forward_shape_and_aux():
+    cfg = fm.LogPolarFoveatedConvConfig(
+        input_hw=(8, 8),
+        input_channels=2,
+        radial_bins=5,
+        angular_bins=12,
+        channels1=4,
+        channels2=6,
+        output_dim=5,
+        min_radius=0.5,
+    )
+
+    def forward(x):
+        model = fm.LogPolarFoveatedConvSNN(cfg)
+        logits, aux = model(x)
+        return logits, aux["spike_rate"], aux["logpolar_seq"], aux["radial_energy"]
+
+    transformed = hk.without_apply_rng(hk.transform(forward))
+    x = jnp.arange(4 * 2 * 8 * 8 * 2, dtype=jnp.float32).reshape((4, 2, 8, 8, 2))
+    params = transformed.init(jax.random.PRNGKey(28), x)
+    logits, spike_rate, logpolar_seq, radial_energy = transformed.apply(params, x)
+
+    assert logits.shape == (2, cfg.output_dim)
+    assert spike_rate.shape == (2,)
+    assert logpolar_seq.shape == (4, 2, cfg.radial_bins, cfg.angular_bins, cfg.input_channels)
+    assert radial_energy.shape == (cfg.radial_bins,)
+    assert jnp.all(jnp.isfinite(logpolar_seq))
+
+
 def test_imu_conditioned_visual_snn_forward_shape():
     vcfg = fm.ConvConfig(input_hw=(8, 8), input_channels=2, channels1=4, channels2=5, output_dim=6)
     cfg = fm.IMUConditionedConfig(vision_cfg=vcfg, imu_dim=3, imu_hidden=8, gating="hard")

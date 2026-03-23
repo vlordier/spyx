@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import haiku as hk
 import jax
 import jax.numpy as jnp
+from jax.scipy import ndimage as jndimage
 
 from . import nn as snn
 
@@ -615,6 +616,109 @@ class FoveatedDualPathConfig:
     threshold: float = 1.0
     padding: str = "SAME"
     readout: str = "mean"
+
+
+@dataclass
+class LogPolarFoveatedConvConfig:
+    input_hw: tuple[int, int]
+    input_channels: int
+    radial_bins: int
+    angular_bins: int
+    channels1: int
+    channels2: int
+    output_dim: int
+    kernel_size: int = 3
+    min_radius: float = 1.0
+    max_radius_scale: float = 1.0
+    beta: float = 0.9
+    threshold: float = 1.0
+    padding: str = "SAME"
+    readout: str = "mean"
+
+
+def _build_log_polar_grid(
+    input_hw: tuple[int, int],
+    radial_bins: int,
+    angular_bins: int,
+    min_radius: float,
+    max_radius_scale: float,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    height, width = input_hw
+    center_y = (height - 1) / 2.0
+    center_x = (width - 1) / 2.0
+    max_radius = min(center_y, center_x) * max_radius_scale
+    max_radius = max(max_radius, min_radius + 1e-3)
+    radial_steps = jnp.linspace(0.0, 1.0, radial_bins)
+    angular_steps = jnp.arange(angular_bins, dtype=jnp.float32) * (2.0 * jnp.pi / max(angular_bins, 1))
+    log_min = jnp.log(jnp.maximum(min_radius, 1e-3))
+    log_max = jnp.log(jnp.maximum(max_radius, min_radius + 1e-3))
+    radii = jnp.exp(log_min + radial_steps * (log_max - log_min))
+    ys = center_y + radii[:, None] * jnp.sin(angular_steps)[None, :]
+    xs = center_x + radii[:, None] * jnp.cos(angular_steps)[None, :]
+    ys = jnp.clip(ys, 0.0, height - 1.0)
+    xs = jnp.clip(xs, 0.0, width - 1.0)
+    return ys, xs
+
+
+def _sample_log_polar_image(x: jnp.ndarray, ys: jnp.ndarray, xs: jnp.ndarray) -> jnp.ndarray:
+    coords = [ys, xs]
+
+    def sample_batch(image: jnp.ndarray) -> jnp.ndarray:
+        channels_first = jnp.moveaxis(image, -1, 0)
+
+        def sample_channel(channel: jnp.ndarray) -> jnp.ndarray:
+            return jndimage.map_coordinates(channel, coords, order=1, mode="nearest")
+
+        sampled = jax.vmap(sample_channel)(channels_first)
+        return jnp.moveaxis(sampled, 0, -1)
+
+    return jax.vmap(sample_batch)(x)
+
+
+class LogPolarFoveatedConvSNN(hk.Module):
+    """Log-polar foveated convolutional SNN with an explicit geometric front-end."""
+
+    def __init__(self, cfg: LogPolarFoveatedConvConfig, name: str | None = None):
+        super().__init__(name=name)
+        self.cfg = cfg
+        self.conv1 = hk.Conv2D(cfg.channels1, kernel_shape=cfg.kernel_size, stride=1, padding=cfg.padding)
+        self.conv2 = hk.Conv2D(cfg.channels2, kernel_shape=cfg.kernel_size, stride=1, padding=cfg.padding)
+        self.lif1 = snn.LIF((cfg.radial_bins, cfg.angular_bins, cfg.channels1), beta=cfg.beta, threshold=cfg.threshold)
+        self.lif2 = snn.LIF((cfg.radial_bins, cfg.angular_bins, cfg.channels2), beta=cfg.beta, threshold=cfg.threshold)
+        self.head = hk.Linear(cfg.output_dim)
+        self.grid_y, self.grid_x = _build_log_polar_grid(
+            cfg.input_hw,
+            cfg.radial_bins,
+            cfg.angular_bins,
+            cfg.min_radius,
+            cfg.max_radius_scale,
+        )
+
+    def _transform(self, x: jnp.ndarray) -> jnp.ndarray:
+        return _sample_log_polar_image(x, self.grid_y, self.grid_x)
+
+    def __call__(self, x_seq: jnp.ndarray):
+        _, batch, _, _, _ = x_seq.shape
+        state1 = self.lif1.initial_state(batch)
+        state2 = self.lif2.initial_state(batch)
+
+        def step(carry, x_t):
+            c1, c2 = carry
+            x_lp = self._transform(x_t)
+            s1, c1 = self.lif1(self.conv1(x_lp), c1)
+            s2, c2 = self.lif2(self.conv2(s1), c2)
+            y_t = self.head(jnp.mean(s2, axis=(1, 2)))
+            sr = jnp.stack([jnp.mean(s1), jnp.mean(s2)])
+            radial_energy = jnp.mean(x_lp, axis=(0, 2, 3))
+            return (c1, c2), (y_t, sr, x_lp, radial_energy)
+
+        _, (logits_seq, spike_rate_seq, logpolar_seq, radial_energy_seq) = hk.scan(step, (state1, state2), x_seq)
+        return _readout(logits_seq, self.cfg.readout), {
+            "logits_seq": logits_seq,
+            "spike_rate": jnp.mean(spike_rate_seq, axis=0),
+            "logpolar_seq": logpolar_seq,
+            "radial_energy": jnp.mean(radial_energy_seq, axis=0),
+        }
 
 
 class FoveatedDualPathSNN(hk.Module):
