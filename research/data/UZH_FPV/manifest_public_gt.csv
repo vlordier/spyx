@@ -1,0 +1,17 @@
+group,sequence,has_public_gt,preferred_format,download_url,local_subdir,use_for
+indoor_45down_public_gt,2,True,zip_text,,indoor_45down_public_gt/seq_02,train
+indoor_45down_public_gt,4,True,zip_text,,indoor_45down_public_gt/seq_04,train
+indoor_45down_public_gt,9,True,zip_text,,indoor_45down_public_gt/seq_09,val
+indoor_45down_public_gt,12,True,zip_text,,indoor_45down_public_gt/seq_12,val
+indoor_45down_public_gt,13,True,zip_text,,indoor_45down_public_gt/seq_13,train
+indoor_45down_public_gt,14,True,zip_text,,indoor_45down_public_gt/seq_14,train
+indoor_forward_public_gt,3,True,zip_text,,indoor_forward_public_gt/seq_03,val
+indoor_forward_public_gt,5,True,zip_text,,indoor_forward_public_gt/seq_05,train
+indoor_forward_public_gt,6,True,zip_text,,indoor_forward_public_gt/seq_06,val
+indoor_forward_public_gt,7,True,zip_text,,indoor_forward_public_gt/seq_07,train
+indoor_forward_public_gt,9,True,zip_text,,indoor_forward_public_gt/seq_09,val
+indoor_forward_public_gt,10,True,zip_text,,indoor_forward_public_gt/seq_10,train
+outdoor_45down_public_gt,1,True,zip_text,,outdoor_45down_public_gt/seq_01,train
+outdoor_forward_public_gt,1,True,zip_text,,outdoor_forward_public_gt/seq_01,train
+outdoor_forward_public_gt,3,True,zip_text,,outdoor_forward_public_gt/seq_03,val
+outdoor_forward_public_gt,5,True,zip_text,,outdoor_forward_public_gt/seq_05,train
